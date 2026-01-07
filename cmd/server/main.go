@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"aether/internal/api"
 	"aether/internal/common"
 	"aether/pkg/config"
 	"aether/pkg/darkmatter"
@@ -147,13 +148,12 @@ func main() {
 
 	// We need to feed DTLS/WebRTC packets to Pion?
 	// Pion usually manages its own socket.
-	// We can use ICE's SetPacketConn?
-	// Pion ICE Agent needs a PacketConn.
 	// We can pass mux.DtlsConn to the WebRTC Engine setting!
-	// Update: transport.WebRTCManager needs to accept a PacketConn or External UDP.
-	// We didn't add that to NewWebRTCManager.
-	// Let's modify NewWebRTCManager to accept `mux.DtlsConn`.
-	// For now, let's keep Server logic structure and fix Manager later.
+
+	// 🛠️ Management API (Project Horizon Agent)
+	go api.StartAdminServer(cfg.AdminPort, cfg.AdminToken, keyStore)
+
+	// Initialize WebRTC Manager
 
 	// 2. TCP/WebSocket Listener (Signaling + TCP VPN + Honeypot)
 	// Force IPv4 Listener to ensure 0.0.0.0 binding matches explicit IPv4 Client
@@ -384,6 +384,69 @@ func (s *InMemoryKeyStore) AddUsage(uuid string, bytes int64) error {
 		}
 	}
 	return nil
+}
+
+func (s *InMemoryKeyStore) GetStats() []config.User {
+	s.RLock()
+	defer s.RUnlock()
+	var list []config.User
+	seen := make(map[string]bool)
+	for _, u := range s.Users {
+		if !seen[u.UUID] {
+			list = append(list, *u)
+			seen[u.UUID] = true
+		}
+	}
+	return list
+}
+
+func (s *InMemoryKeyStore) UpdateUser(uuid string, limitGB float64) error {
+	s.Lock()
+	defer s.Unlock()
+	for _, u := range s.Users {
+		if u.UUID == uuid {
+			u.LimitGB = limitGB
+			return nil
+		}
+	}
+	return fmt.Errorf("user not found")
+}
+
+func (s *InMemoryKeyStore) AddUser(u config.User) {
+	s.Lock()
+	defer s.Unlock()
+
+	// Check if exists
+	for _, user := range s.Users {
+		if user.UUID == u.UUID {
+			// Update existing
+			user.LimitGB = u.LimitGB
+			return
+		}
+	}
+
+	// Create new
+	newUser := &u
+	k := sha256.Sum256([]byte(u.UUID))
+	id := k[:16]
+	s.Users[string(id)] = newUser
+	log.Printf("➕ API Added User: %s", u.UUID)
+}
+
+func (s *InMemoryKeyStore) DeleteUser(uuid string) {
+	s.Lock()
+	defer s.Unlock()
+	var targetID string
+	for id, u := range s.Users {
+		if u.UUID == uuid {
+			targetID = id
+			break // Only break inner loop
+		}
+	}
+	if targetID != "" {
+		delete(s.Users, targetID)
+		log.Printf("➖ API Deleted User: %s", uuid)
+	}
 }
 
 func (s *InMemoryKeyStore) SaveToConfig(cfg *config.Config) {

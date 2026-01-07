@@ -26,6 +26,10 @@ type Config struct {
 	// Client/Server Shared (Dark Matter)
 	EnableDarkMatter bool   `json:"enable_dark_matter,omitempty"`
 	DarkMatterSecret string `json:"dark_matter_secret,omitempty"`
+
+	// Admin API
+	AdminPort  string `json:"admin_port,omitempty"`  // Default 8081
+	AdminToken string `json:"admin_token,omitempty"` // Security Token
 }
 
 func LoadConfig(path string) (*Config, error) {

@@ -356,35 +356,48 @@ func handleRequest(stream net.Conn) {
 	dest := net.JoinHostPort(targetAddr, fmt.Sprintf("%d", port))
 	log.Printf("🌐 SOCKS Request: %s", dest)
 
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	// 🌌 Project Nebula: Happy Eyeballs Fallback Logic
+	// 1. Try Nebula (IPv6 Source) first if enabled.
+	// 2. If that fails (e.g. Target is IPv4-only), Fallback to Standard Dialer.
+
+	var targetConn net.Conn
+	var err error
+	nebulaSuccess := false
+
 	if globalCfg != nil && globalCfg.EnableNebula && globalCfg.IPv6Subnet != "" {
-		// 🌌 Project Nebula: Rotate IPv6
-		randomIP, err := nebula.GetRandomIPv6(globalCfg.IPv6Subnet)
-		if err == nil {
-			// Bind to specific local IP
-			dialer.LocalAddr = &net.TCPAddr{IP: randomIP}
-			log.Printf("🌌 Nebula active: Dialing from %s", randomIP)
+		randomIP, nErr := nebula.GetRandomIPv6(globalCfg.IPv6Subnet)
+		if nErr == nil {
+			// Try Dialing with specific IPv6 Source
+			nebulaDialer := &net.Dialer{
+				Timeout:   4 * time.Second, // Fast timeout for fallback
+				LocalAddr: &net.TCPAddr{IP: randomIP},
+			}
+			log.Printf("🌌 Nebula active: Dialing %s from %s", dest, randomIP)
+			targetConn, err = nebulaDialer.Dial("tcp", dest)
+			if err == nil {
+				nebulaSuccess = true
+			} else {
+				log.Printf("⚠️ Nebula Dial Failed (%s): %v -> Fallback to Standard IP", dest, err)
+			}
 		} else {
-			log.Printf("⚠️ Nebula Error: %v", err)
+			log.Printf("⚠️ Nebula Generation Error: %v", nErr)
 		}
 	} else {
-		log.Printf("⚠️ Nebula SKIPPED: Cfg=%v En=%v Sub=%s",
-			globalCfg != nil,
-			globalCfg != nil && globalCfg.EnableNebula,
-			func() string {
-				if globalCfg != nil {
-					return globalCfg.IPv6Subnet
-				} else {
-					return "nil"
-				}
-			}())
+		// Log skipped reason only once per connection (debug only, maybe remove later to reduce spam)
+		// log.Printf("⚠️ Nebula SKIPPED")
 	}
 
-	targetConn, err := dialer.Dial("tcp", dest)
-	if err != nil {
-		log.Printf("❌ SOCKS Dial Failed (%s): %v", dest, err)
-		return
+	// 2. Fallback (Standard IP / IPv4 / IPv6 w/o source bind)
+	if !nebulaSuccess {
+		// Standard Dialer (matches OS default behavior)
+		stdDialer := &net.Dialer{Timeout: 10 * time.Second}
+		targetConn, err = stdDialer.Dial("tcp", dest)
+		if err != nil {
+			log.Printf("❌ SOCKS Dial Failed (%s): %v", dest, err)
+			return
+		}
 	}
+
 	log.Printf("✅ SOCKS Dial Connected: %s", dest)
 	defer targetConn.Close()
 

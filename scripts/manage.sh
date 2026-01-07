@@ -123,6 +123,46 @@ uninstall() {
   echo -e "${GREEN}Uninstalled.${NC}"
 }
 
+# Helper: Generate UUID (if uuidgen missing)
+generate_uuid() {
+  if command -v uuidgen >/dev/null; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  else
+    cat /proc/sys/kernel/random/uuid
+  fi
+}
+
+add_user() {
+  LIMIT_GB=${2:-0} # Default 0 (Unlimited)
+
+  if [ ! -f "$CONFIG_FILE" ]; then
+    echo -e "${RED}Error: Config file not found at $CONFIG_FILE${NC}"
+    exit 1
+  fi
+
+  NEW_UUID=$(generate_uuid)
+  
+  # Use jq to append to users array
+  if command -v jq >/dev/null; then
+    # Create temp file
+    tmp=$(mktemp)
+    jq --arg uuid "$NEW_UUID" --argjson limit "$LIMIT_GB" \
+       '.users += [{"uuid": $uuid, "limit_gb": $limit, "usage_bytes": 0}]' \
+       "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+    
+    echo -e "${GREEN}✅ User Added!${NC}"
+    echo "UUID: $NEW_UUID"
+    echo "Limit: ${LIMIT_GB} GB"
+    
+    # Reload server to pick up changes
+    systemctl restart aether
+    echo "Server restarted."
+  else
+    echo -e "${RED}Error: 'jq' is required to manage JSON configs.${NC}"
+    echo "Run: apt-get install jq"
+  fi
+}
+
 case "$1" in
   install)
     install
@@ -142,10 +182,13 @@ case "$1" in
   logs)
     journalctl -u aether -f
     ;;
+  add-user)
+    add_user "$@"
+    ;;
   uninstall)
     uninstall
     ;;
   *)
-    echo "Usage: $0 {install|start|stop|restart|logs|uninstall}"
+    echo "Usage: $0 {install|start|stop|restart|logs|add-user <limit_gb>|uninstall}"
     exit 1
 esac

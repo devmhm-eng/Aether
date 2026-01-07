@@ -58,6 +58,8 @@ func main() {
 	} else {
 		keyStore = NewInMemoryKeyStore(cfg.Users)
 		globalCfg = cfg // Assign for Nebula access
+		log.Printf("📜 Config Loaded: Nebula=%v DarkMatter=%v Subnet='%s'",
+			cfg.EnableNebula, cfg.EnableDarkMatter, cfg.IPv6Subnet)
 	}
 
 	tlsConf := common.GenerateTLSConfig()
@@ -365,6 +367,17 @@ func handleRequest(stream net.Conn) {
 		} else {
 			log.Printf("⚠️ Nebula Error: %v", err)
 		}
+	} else {
+		log.Printf("⚠️ Nebula SKIPPED: Cfg=%v En=%v Sub=%s",
+			globalCfg != nil,
+			globalCfg != nil && globalCfg.EnableNebula,
+			func() string {
+				if globalCfg != nil {
+					return globalCfg.IPv6Subnet
+				} else {
+					return "nil"
+				}
+			}())
 	}
 
 	targetConn, err := dialer.Dial("tcp", dest)

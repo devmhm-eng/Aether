@@ -341,7 +341,7 @@ func NewInMemoryKeyStore(users []config.User) *InMemoryKeyStore {
 		k := sha256.Sum256([]byte(u.UUID))
 		id := k[:16]
 		s.Users[string(id)] = u
-		log.Printf("🔑 Loaded User: PayloadID=%x UUID=%s Limit=%dGB Usage=%d", id, u.UUID, u.LimitGB, u.UsageBytes)
+		log.Printf("🔑 Loaded User: PayloadID=%x UUID=%s Limit=%.2fGB Usage=%d", id, u.UUID, u.LimitGB, u.UsageBytes)
 	}
 	return s
 }
@@ -378,7 +378,7 @@ func (s *InMemoryKeyStore) AddUsage(uuid string, bytes int64) error {
 
 	// Check Limit
 	if user.LimitGB > 0 {
-		limitBytes := int64(user.LimitGB) * 1024 * 1024 * 1024
+		limitBytes := int64(user.LimitGB * 1024 * 1024 * 1024)
 		if user.UsageBytes > limitBytes {
 			return fmt.Errorf("quota exceeded")
 		}

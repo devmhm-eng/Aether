@@ -182,13 +182,107 @@ case "$1" in
   logs)
     journalctl -u aether -f
     ;;
+# Edit User Limit
+edit_user() {
+  UUID=$2
+  LIMIT_GB=${3:-0}
+
+  if [ -z "$UUID" ]; then
+    echo -e "${RED}Usage: ./manage.sh edit-user <uuid> <new_limit_gb>${NC}"
+    exit 1
+  fi
+
+  if [ ! -f "$CONFIG_FILE" ]; then
+    echo -e "${RED}Error: Config file not found.${NC}"
+    exit 1
+  fi
+
+  if command -v jq >/dev/null; then
+    tmp=$(mktemp)
+    # Update limit for specific UUID
+    jq --arg uuid "$UUID" --argjson limit "$LIMIT_GB" \
+       '(.users[] | select(.uuid == $uuid).limit_gb) = $limit' \
+       "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+    
+    echo -e "${GREEN}✅ User Updated!${NC}"
+    echo "UUID: $UUID"
+    echo "New Limit: ${LIMIT_GB} GB"
+    
+    systemctl restart aether
+    echo "Server restarted."
+  else
+    echo -e "${RED}Error: 'jq' required.${NC}"
+  fi
+}
+
+# Show Users and Usage
+show_users() {
+  if [ ! -f "$CONFIG_FILE" ]; then
+    echo -e "${RED}Error: Config file not found.${NC}"
+    exit 1
+  fi
+
+  echo -e "${YELLOW}=== Aether Users ===${NC}"
+  # Print Header
+  printf "%-40s %-15s %-15s %-10s\n" "UUID" "LIMIT (GB)" "USED (GB)" "STATUS"
+  echo "--------------------------------------------------------------------------------"
+  
+  # Parse JSON and format output
+  # Usage is in Bytes, divide by 1073741824 for GB
+  jq -r '.users[] | "\(.uuid) \(.limit_gb) \(.usage_bytes)"' "$CONFIG_FILE" | while read -r uuid limit usage; do
+    
+    # Calculate Usage in GB (Bash doesn't do float math easily, using awk)
+    USED_GB=$(awk "BEGIN {printf \"%.2f\", $usage/1073741824}")
+    
+    # Status
+    STATUS="${GREEN}Active${NC}"
+    if (( $(echo "$limit > 0" | bc -l) )); then
+      # Check if usage > limit
+      IS_OVER=$(awk "BEGIN {if ($USED_GB > $limit) print 1; else print 0}")
+      if [ "$IS_OVER" -eq 1 ]; then
+        STATUS="${RED}OVER${NC}"
+      fi
+    else
+      limit="∞"
+    fi
+
+    printf "%-40s %-15s %-15s %-10b\n" "$uuid" "$limit" "$USED_GB" "$STATUS"
+  done
+  echo "--------------------------------------------------------------------------------"
+}
+
+case "$1" in
+  install)
+    install
+    ;;
+  start)
+    systemctl start aether
+    echo "Service started."
+    ;;
+  stop)
+    systemctl stop aether
+    echo "Service stopped."
+    ;;
+  restart)
+    systemctl restart aether
+    echo "Service restarted."
+    ;;
+  logs)
+    journalctl -u aether -f
+    ;;
   add-user)
     add_user "$@"
+    ;;
+  edit-user)
+    edit_user "$@"
+    ;;
+  show-users)
+    show_users
     ;;
   uninstall)
     uninstall
     ;;
   *)
-    echo "Usage: $0 {install|start|stop|restart|logs|add-user <limit_gb>|uninstall}"
+    echo "Usage: $0 {install|start|stop|restart|logs|add-user <limit>|edit-user <uuid> <limit>|show-users|uninstall}"
     exit 1
 esac

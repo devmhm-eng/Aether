@@ -6,8 +6,9 @@ import (
 )
 
 type User struct {
-	UUID    string `json:"uuid"`
-	LimitGB int    `json:"limit_gb"`
+	UUID       string `json:"uuid"`
+	LimitGB    int    `json:"limit_gb"`    // 0 = Unlimited
+	UsageBytes int64  `json:"usage_bytes"` // Exact byte count
 }
 
 type Config struct {

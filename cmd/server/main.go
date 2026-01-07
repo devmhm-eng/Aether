@@ -14,6 +14,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	"aether/internal/common"
@@ -85,6 +86,14 @@ func main() {
 			}
 		}()
 	}
+
+	// 💾 Persistence Loop (Save Quotas Every Minute)
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		for range ticker.C {
+			keyStore.SaveToConfig(globalCfg)
+		}
+	}()
 
 	// Initialize WebRTC Manager
 	rtcMgr = transport.NewWebRTCManager()
@@ -275,6 +284,12 @@ func (l *ServerFluxLink) Read(b []byte) (int, error) {
 	l.ActiveUUID = uuid
 	log.Printf("🔓 Decrypted Frame: UUID=%s Size=%d", uuid, len(data))
 
+	// 📊 Count Traffic (Ingress)
+	if err := keyStore.AddUsage(uuid, int64(len(data))); err != nil {
+		log.Printf("🛑 Quota Exceeded for User %s. Closing connection.", uuid)
+		return 0, io.EOF
+	}
+
 	n := copy(b, data)
 	if n < len(data) {
 		l.readBuf = data[n:]
@@ -286,6 +301,15 @@ func (l *ServerFluxLink) Write(b []byte) (int, error) {
 	if l.ActiveUUID == "" {
 		return 0, fmt.Errorf("no active session")
 	}
+
+	// 📊 Count Traffic (Egress)
+	// We count BEFORE encryption to match Ingress logic (Payload size).
+	// Or should we count AFTER? Fair usage usually implies Payload.
+	if err := keyStore.AddUsage(l.ActiveUUID, int64(len(b))); err != nil {
+		log.Printf("🛑 Quota Exceeded for User %s. Dropping packet.", l.ActiveUUID)
+		return 0, io.EOF
+	}
+
 	masked, err := mirage.Seal(b, l.ActiveUUID)
 	if err != nil {
 		return 0, err
@@ -305,21 +329,88 @@ func (l *ServerFluxLink) Write(b []byte) (int, error) {
 
 func (l *ServerFluxLink) Close() error { return l.RWC.Close() }
 
-type InMemoryKeyStore struct{ Users map[string]string }
+type InMemoryKeyStore struct {
+	sync.RWMutex
+	Users map[string]*config.User // PayloadID -> User Pointer
+}
 
 func NewInMemoryKeyStore(users []config.User) *InMemoryKeyStore {
-	s := &InMemoryKeyStore{make(map[string]string)}
-	for _, u := range users {
+	s := &InMemoryKeyStore{Users: make(map[string]*config.User)}
+	for i := range users {
+		u := &users[i] // Take pointer to slice element to persist state
 		k := sha256.Sum256([]byte(u.UUID))
 		id := k[:16]
-		s.Users[string(id)] = u.UUID
-		log.Printf("🔑 Loaded User: PayloadID=%x UUID=%s", id, u.UUID)
+		s.Users[string(id)] = u
+		log.Printf("🔑 Loaded User: PayloadID=%x UUID=%s Limit=%dGB Usage=%d", id, u.UUID, u.LimitGB, u.UsageBytes)
 	}
 	return s
 }
+
 func (s *InMemoryKeyStore) GetUUID(id []byte) (string, bool) {
+	s.RLock()
+	defer s.RUnlock()
 	u, ok := s.Users[string(id)]
-	return u, ok
+	if !ok {
+		return "", false
+	}
+	return u.UUID, true
+}
+
+func (s *InMemoryKeyStore) AddUsage(uuid string, bytes int64) error {
+	s.Lock()
+	defer s.Unlock()
+
+	// Slow lookup (reverse map), but safe and simple for MVP with few users.
+	// Production should map UUID -> User directly too.
+	var user *config.User
+	for _, u := range s.Users {
+		if u.UUID == uuid {
+			user = u
+			break
+		}
+	}
+
+	if user == nil {
+		return nil // Should not happen if authenticated
+	}
+
+	user.UsageBytes += bytes
+
+	// Check Limit
+	if user.LimitGB > 0 {
+		limitBytes := int64(user.LimitGB) * 1024 * 1024 * 1024
+		if user.UsageBytes > limitBytes {
+			return fmt.Errorf("quota exceeded")
+		}
+	}
+	return nil
+}
+
+func (s *InMemoryKeyStore) SaveToConfig(cfg *config.Config) {
+	s.RLock()
+	defer s.RUnlock()
+
+	// cfg.Users is a slice. We constructed KeyStore pointing to it?
+	// Ah, NewInMemoryKeyStore took []config.User (Copy).
+	// So we need to dump our state back into a struct and Save.
+	// Since cfg pointer is global, we can just update it if we are careful.
+	// Actually, let's just write a new file from our Map.
+
+	var userList []config.User
+	seen := make(map[string]bool)
+
+	for _, u := range s.Users {
+		if !seen[u.UUID] {
+			userList = append(userList, *u)
+			seen[u.UUID] = true
+		}
+	}
+
+	newCfg := *cfg // Shallow copy
+	newCfg.Users = userList
+
+	common.SaveJSON("server_config.json", newCfg)
+	// log.Println("💾 Config Saved.")
 }
 
 func handleRequest(stream net.Conn) {

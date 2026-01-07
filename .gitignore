@@ -1,0 +1,31 @@
+# Binaries
+bin/
+client_mac
+server_linux
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Logs
+*.log
+*.out
+
+# OS Specific
+.DS_Store
+Thumbs.db
+
+# Configs (User specific)
+client_config.json
+server_config.json
+# Keep config.json as template
+
+# User specific keys/certs
+*.pem
+*.key
+*.csr
+*.crt
+
+# IDEs
+.vscode/
+.idea/

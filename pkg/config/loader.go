@@ -18,7 +18,13 @@ type Config struct {
 	Transport  string `json:"transport,omitempty"` // "auto", "tcp", "ws"
 
 	// Server Side
-	Users []User `json:"users,omitempty"`
+	Users        []User `json:"users,omitempty"`
+	EnableNebula bool   `json:"enable_nebula,omitempty"`
+	IPv6Subnet   string `json:"ipv6_subnet,omitempty"` // e.g. "2001:db8::/64"
+
+	// Client/Server Shared (Dark Matter)
+	EnableDarkMatter bool   `json:"enable_dark_matter,omitempty"`
+	DarkMatterSecret string `json:"dark_matter_secret,omitempty"`
 }
 
 func LoadConfig(path string) (*Config, error) {

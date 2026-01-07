@@ -1,0 +1,13 @@
+{
+    "server_addr": ":4242",
+    "users": [
+        {
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "limit_gb": 100
+        }
+    ],
+    "enable_nebula": true,
+    "ipv6_subnet": "2a01:4f8:1c1f:b27f::/64",
+    "enable_dark_matter": true,
+    "dark_matter_secret": "AETHER_SUPER_SECRET_KEY_2026"
+}

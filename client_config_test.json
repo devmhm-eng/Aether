@@ -1,0 +1,8 @@
+{
+    "server_addr": "46.224.207.62:4242",
+    "local_port": 1080,
+    "uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "transport": "auto",
+    "enable_dark_matter": true,
+    "dark_matter_secret": "AETHER_SUPER_SECRET_KEY_2026"
+}

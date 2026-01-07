@@ -25,8 +25,10 @@ var (
 
 func main() {
 	var err error
-	// Try client_config.json first (Dev), then config.json (Prod)
-	if _, e := os.Stat("client_config.json"); e == nil {
+	// Try client_config_test.json first (Explicit Test), then client_config.json (Dev), then config.json (Prod)
+	if _, e := os.Stat("client_config_test.json"); e == nil {
+		cfg, err = config.LoadConfig("client_config_test.json")
+	} else if _, e := os.Stat("client_config.json"); e == nil {
 		cfg, err = config.LoadConfig("client_config.json")
 	} else {
 		cfg, err = config.LoadConfig("config.json")
@@ -68,8 +70,8 @@ func maintainConnection() {
 	for {
 		log.Println("🔄 Connecting...")
 
-		// PASS UUID and Transport
-		conn, err := flux.Dial(cfg.ServerAddr, tlsConf, cfg.ClientUUID, cfg.Transport)
+		// PASS Config (includes Dark Matter secret) and TLS
+		conn, err := flux.Dial(cfg, tlsConf)
 		if err != nil {
 			log.Printf("⚠️ Dial Failed: %v", err)
 			time.Sleep(3 * time.Second)

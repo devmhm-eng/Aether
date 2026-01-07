@@ -9,19 +9,19 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
-	// Dark Matter Support
+	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go"
+	utls "github.com/refraction-networking/utls"
 
+	"aether/pkg/config"
+	"aether/pkg/darkmatter"
 	"aether/pkg/ghost"
 	"aether/pkg/mirage" // Siren Support
 	"aether/pkg/siren"
 	"aether/pkg/transport" // WebRTC Support
-
-	"github.com/gorilla/websocket"
-	"github.com/quic-go/quic-go"
-
-	utls "github.com/refraction-networking/utls"
 )
 
 // FluxConn wraps the transport.
@@ -44,16 +44,30 @@ type FluxConn struct {
 	// Auth
 	ClientUUID string
 	KeyStore   mirage.KeyStore
+
+	// Dark Matter
+	EnableDarkMatter bool
+	DarkMatterSecret string
 }
 
 // Dial initiates the connection
-func Dial(addr string, tlsConf *tls.Config, uuid string, trans string) (*FluxConn, error) {
+func Dial(cfg *config.Config, tlsConf *tls.Config) (*FluxConn, error) {
 	conn := &FluxConn{
-		Address:    addr,
-		TlsConfig:  tlsConf,
-		ClientUUID: uuid,
-		Transport:  trans,
+		Address:          cfg.ServerAddr,
+		TlsConfig:        tlsConf,
+		ClientUUID:       cfg.ClientUUID,
+		Transport:        cfg.Transport,
+		EnableDarkMatter: cfg.EnableDarkMatter,
+		DarkMatterSecret: cfg.DarkMatterSecret,
 	}
+
+	addr, err := conn.getDestAddr()
+	if err != nil {
+		return nil, err
+	}
+	conn.Address = addr // Update address with calculated port if needed
+
+	trans := cfg.Transport
 
 	if trans == "ws" {
 		if err := conn.connectWS(); err != nil {
@@ -452,3 +466,26 @@ func (f *FluxConn) SetWriteDeadline(t time.Time) error { return nil }
 type SingleKeyStore struct{ UUID string }
 
 func (s *SingleKeyStore) GetUUID(authID []byte) (string, bool) { return s.UUID, true }
+
+// getDestAddr calculates the target address (Port Hopping if enabled)
+func (f *FluxConn) getDestAddr() (string, error) {
+	if !f.EnableDarkMatter {
+		return f.Address, nil
+	}
+
+	host, _, err := net.SplitHostPort(f.Address)
+	if err != nil {
+		return "", err
+	}
+
+	// Calculate Port based on Time
+	port := darkmatter.GetActivePort(f.DarkMatterSecret, time.Now())
+
+	// Add Jitter/Drift tolerance?
+	// For client, we just dial the CURRENT calculated port.
+	// Retry logic might be needed if clock skew involves previous/next window.
+	// But simplest implementation is direct dial.
+
+	log.Printf("🌑 Dark Matter: Hopping to Port %d", port)
+	return net.JoinHostPort(host, strconv.Itoa(port)), nil
+}

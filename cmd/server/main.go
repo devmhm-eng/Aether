@@ -18,8 +18,10 @@ import (
 
 	"aether/internal/common"
 	"aether/pkg/config"
+	"aether/pkg/darkmatter"
 	"aether/pkg/honeypot"
 	"aether/pkg/mirage"
+	"aether/pkg/nebula"
 	"aether/pkg/transport" // Import WebRTC Transport
 
 	"github.com/gorilla/websocket"
@@ -55,6 +57,7 @@ func main() {
 		keyStore = NewInMemoryKeyStore([]config.User{})
 	} else {
 		keyStore = NewInMemoryKeyStore(cfg.Users)
+		globalCfg = cfg // Assign for Nebula access
 	}
 
 	tlsConf := common.GenerateTLSConfig()
@@ -62,6 +65,24 @@ func main() {
 
 	// Start Honeypot Server
 	go honeypot.StartServer("8080")
+
+	// 🌌 Project Dark Matter: Port Monitor (Server Side verification)
+	// Since we are not using eBPF in this MVP to physically move ports,
+	// we verify the logic by printing the "Active Port" the client should be using.
+	if cfg.EnableDarkMatter {
+		go func() {
+			log.Printf("🌑 Dark Matter Active! Secret: %s", cfg.DarkMatterSecret)
+			for {
+				port := darkmatter.GetActivePort(cfg.DarkMatterSecret, time.Now())
+				log.Printf("🌑 [DarkMatter] Active Port Window: %d", port)
+
+				// Calculate next window
+				now := time.Now().Unix()
+				rem := darkmatter.RotationInterval - (now % darkmatter.RotationInterval)
+				time.Sleep(time.Duration(rem) * time.Second)
+			}
+		}()
+	}
 
 	// Initialize WebRTC Manager
 	rtcMgr = transport.NewWebRTCManager()
@@ -332,17 +353,38 @@ func handleRequest(stream net.Conn) {
 	port := binary.BigEndian.Uint16(portBuf)
 	dest := net.JoinHostPort(targetAddr, fmt.Sprintf("%d", port))
 	log.Printf("🌐 SOCKS Request: %s", dest)
-	targetConn, err := net.DialTimeout("tcp", dest, 10*time.Second)
+
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	if globalCfg != nil && globalCfg.EnableNebula && globalCfg.IPv6Subnet != "" {
+		// 🌌 Project Nebula: Rotate IPv6
+		randomIP, err := nebula.GetRandomIPv6(globalCfg.IPv6Subnet)
+		if err == nil {
+			// Bind to specific local IP
+			dialer.LocalAddr = &net.TCPAddr{IP: randomIP}
+			log.Printf("🌌 Nebula active: Dialing from %s", randomIP)
+		} else {
+			log.Printf("⚠️ Nebula Error: %v", err)
+		}
+	}
+
+	targetConn, err := dialer.Dial("tcp", dest)
 	if err != nil {
 		log.Printf("❌ SOCKS Dial Failed (%s): %v", dest, err)
 		return
 	}
 	log.Printf("✅ SOCKS Dial Connected: %s", dest)
 	defer targetConn.Close()
+
+	// Update Logger to show Source IP (Nebula Check)
+	log.Printf("✅ SOCKS Dial Connected: %s -> %s", targetConn.LocalAddr(), dest)
+
 	stream.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 	go io.Copy(targetConn, stream)
 	io.Copy(stream, targetConn)
 }
+
+// Global Config reference (to access Nebula settings)
+var globalCfg *config.Config
 
 func handleHTTPTraffic(conn net.Conn, br *bufio.Reader) {
 	vln := &SingleConnListener{conn: conn}

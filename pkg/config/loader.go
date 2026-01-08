@@ -7,8 +7,9 @@ import (
 
 type User struct {
 	UUID       string  `json:"uuid"`
-	LimitGB    float64 `json:"limit_gb"`    // 0 = Unlimited, Supports decimals (e.g. 0.12)
-	UsageBytes int64   `json:"usage_bytes"` // Exact byte count
+	LimitGB    float64 `json:"limit_gb"`              // 0 = Unlimited, Supports decimals (e.g. 0.12)
+	UsageBytes int64   `json:"usage_bytes"`           // Exact byte count
+	HardwareID string  `json:"hardware_id,omitempty"` // Device Lock
 }
 
 type Config struct {

@@ -418,6 +418,17 @@ func (s *InMemoryKeyStore) AddUsage(uuid string, bytes int64) error {
 	return nil
 }
 
+func (s *InMemoryKeyStore) GetUser(uuid string) *config.User {
+	s.RLock()
+	defer s.RUnlock()
+	for _, u := range s.Users {
+		if u.UUID == uuid {
+			return u
+		}
+	}
+	return nil
+}
+
 func (s *InMemoryKeyStore) GetStats() []config.User {
 	s.RLock()
 	defer s.RUnlock()

@@ -37,8 +37,9 @@ jobs:
       - name: Install mobile dependencies
         run: |
           go get golang.org/x/mobile/bind
-          # Remove WebRTC dependency for mobile build
-          go mod edit -droprequire=github.com/pion/webrtc/v3
+          # Delete server and transport code that uses incompatible libraries (WebRTC/Pion)
+          rm -rf cmd/server pkg/transport
+          # Force clean dependency tree
           go mod tidy
           go mod download
       

@@ -40,7 +40,7 @@ class AetherVpnService : VpnService() {
                 // Run in background thread to avoid blocking Main Logic
                 Thread {
                     try {
-                        Mobile.startVPN(fd, config)
+                        Mobile.startVPN(fd.toLong(), config)
                     } catch (e: Exception) {
                         Log.e("AetherVPN", "Go Core Error: ${e.message}")
                         stopSelf()

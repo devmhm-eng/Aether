@@ -25,6 +25,13 @@ class AetherVpnService : VpnService() {
         builder.addAddress("10.0.0.2", 32)
         builder.addRoute("0.0.0.0", 0)
         builder.setMtu(1500)
+
+        // Exclude own app to prevent VPN loop
+        try {
+            builder.addDisallowedApplication(packageName)
+        } catch (e: Exception) {
+            Log.e("AetherVPN", "Failed to exclude package: ${e.message}")
+        }
         
         // Add DNS (Optional)
         builder.addDnsServer("1.1.1.1")

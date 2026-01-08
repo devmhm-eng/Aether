@@ -19,11 +19,13 @@ import (
 
 	"aether/internal/api"
 	"aether/internal/common"
+	horizonclient "aether/internal/horizon/client"
 	"aether/pkg/config"
 	"aether/pkg/darkmatter"
 	"aether/pkg/honeypot"
 	"aether/pkg/mirage"
 	"aether/pkg/nebula"
+	"aether/pkg/server"
 	"aether/pkg/transport" // Import WebRTC Transport
 
 	"github.com/gorilla/websocket"
@@ -34,8 +36,10 @@ import (
 const addr = "0.0.0.0:4242"
 
 var (
-	keyStore *InMemoryKeyStore
-	rtcMgr   *transport.WebRTCManager
+	keyStore      *InMemoryKeyStore
+	rtcMgr        *transport.WebRTCManager
+	horizonLoader *horizonclient.ConfigLoader
+	packetHandler *server.PacketHandler
 )
 
 // WebSocket Upgrader
@@ -62,6 +66,23 @@ func main() {
 		globalCfg = cfg // Assign for Nebula access
 		log.Printf("📜 Config Loaded: Nebula=%v DarkMatter=%v Subnet='%s'",
 			cfg.EnableNebula, cfg.EnableDarkMatter, cfg.IPv6Subnet)
+
+		// 🌅 Initialize Horizon Integration
+		if cfg.HorizonDB != "" {
+			horizonLoader, err = horizonclient.NewConfigLoader(cfg.HorizonDB)
+			if err != nil {
+				log.Printf("⚠️  Horizon DB connection failed: %v", err)
+				horizonLoader = nil
+			} else {
+				log.Println("✅ Horizon Integration Enabled - Multi-tenant mode active")
+			}
+		}
+
+		// 🎧 Start Dynamic Listeners
+		if cfg.NodeID > 0 && horizonLoader != nil {
+			lm := NewListenerManager()
+			go lm.StartDynamicListeners(cfg.NodeID)
+		}
 	}
 
 	tlsConf := common.GenerateTLSConfig()
@@ -95,6 +116,11 @@ func main() {
 			keyStore.SaveToConfig(globalCfg)
 		}
 	}()
+
+	// 📦 Initialize Packet Handler for VPN traffic
+	packetHandler = server.NewPacketHandler()
+	go packetHandler.LogStats()
+	log.Println("📦 Packet Handler initialized")
 
 	// Initialize WebRTC Manager
 	rtcMgr = transport.NewWebRTCManager()
@@ -283,6 +309,12 @@ func (l *ServerFluxLink) Read(b []byte) (int, error) {
 	uuid, _ := keyStore.GetUUID(authID)
 	l.ActiveUUID = uuid
 	log.Printf("🔓 Decrypted Frame: UUID=%s Size=%d", uuid, len(data))
+
+	// 🔒 Validate Protocol Access (Horizon Integration)
+	if !validateUserProtocol(uuid, "flux") {
+		log.Printf("🚫 Access Denied: User %s not authorized for Flux protocol", uuid)
+		return 0, io.EOF
+	}
 
 	// 📊 Count Traffic (Ingress)
 	if err := keyStore.AddUsage(uuid, int64(len(data))); err != nil {
@@ -687,12 +719,23 @@ func startSmux(link io.ReadWriteCloser) {
 		return
 	}
 	defer session.Close()
+
+	log.Println("📡 Smux session established, accepting streams...")
+
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
+			log.Println("Stream accept error:", err)
 			break
 		}
-		go handleRequest(stream)
+
+		// Use PacketHandler for VPN traffic forwarding
+		if packetHandler != nil {
+			go packetHandler.HandleStream(stream)
+		} else {
+			// Fallback to old SOCKS handler
+			go handleRequest(stream)
+		}
 	}
 }
 

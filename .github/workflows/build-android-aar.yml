@@ -25,8 +25,8 @@ jobs:
       
       - name: Install specific NDK version
         run: |
-          echo "y" | sdkmanager "ndk;25.1.8937393"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.1.8937393" >> $GITHUB_ENV
+          echo "y" | sdkmanager "ndk;23.1.7779620"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/23.1.7779620" >> $GITHUB_ENV
       
       - name: Install gomobile
         run: |

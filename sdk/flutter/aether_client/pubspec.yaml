@@ -1,0 +1,28 @@
+name: aether_client
+description: "Aether VPN Client SDK for Flutter"
+version: 0.1.0
+homepage: "https://aether.dev"
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.0
+  path: ^1.8.0
+  device_info_plus: ^10.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.devmhm.aether_client
+        pluginClass: AetherClientPlugin
+      ios:
+        pluginClass: AetherClientPlugin
+      macos:
+        pluginClass: AetherClientPlugin
+      windows:
+        pluginClass: AetherClientPlugin

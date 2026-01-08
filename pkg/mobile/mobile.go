@@ -15,7 +15,6 @@ import (
 	"aether/pkg/config"
 	"aether/pkg/device"
 	"aether/pkg/enigma"
-	"aether/pkg/flux"
 	"aether/pkg/tun"
 
 	"github.com/xtaci/smux"
@@ -200,10 +199,15 @@ func maintainConnection() {
 
 		log.Println("🔄 Mobile: Connecting to server...")
 
-		// PASS Config (includes Dark Matter secret) and TLS
-		conn, err := flux.Dial(cfg, tlsConf)
+		// DIRECT TLS CONNECTION (No Flux/WebRTC)
+		targetAddr := cfg.ServerAddr
+		if targetAddr == "" {
+			targetAddr = "127.0.0.1:4242"
+		}
+
+		conn, err := tls.Dial("tcp", targetAddr, tlsConf)
 		if err != nil {
-			log.Printf("⚠️ Mobile Dial Failed: %v", err)
+			log.Printf("⚠️ Mobile Dial Failed (%s): %v", targetAddr, err)
 
 			// Wait before retry, listening for stop signal
 			select {
@@ -275,21 +279,25 @@ func StartVPN(fd int, configJSON string) error {
 	}
 
 	// Establish connection to server using flux transport
-	log.Printf("🔗 Connecting to Aether Server via flux...")
+	// Connect to Server via TLS
+	tlsConf := &tls.Config{InsecureSkipVerify: true}
+	targetAddr := cfg.ServerAddr
+	if targetAddr == "" {
+		targetAddr = "127.0.0.1:4242"
+	}
 
-	// TODO: For now, create a mock smux session
-	// In production, this should use flux.DialFlux() to actual server
-	// For testing, we'll use a local mock
+	log.Printf("🔗 Connecting to Aether Server %s...", targetAddr)
 
-	// Create a mock net.Conn for smux (replace with real flux connection)
-	// This is temporary - just to get compilation working
-	mockConn := &mockNetConn{}
-
-	// Create smux session over the connection
-	var err error
-	sess, err = smux.Client(mockConn, smux.DefaultConfig())
+	conn, err := tls.Dial("tcp", targetAddr, tlsConf)
 	if err != nil {
-		return fmt.Errorf("smux client failed: %v", err)
+		return fmt.Errorf("failed to connect to server: %v", err)
+	}
+
+	// Create smux session
+	sess, err = smux.Client(conn, smux.DefaultConfig())
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("smux handshake failed: %v", err)
 	}
 
 	log.Printf("✅ Smux session established")

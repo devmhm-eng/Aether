@@ -37,6 +37,9 @@ jobs:
       - name: Install mobile dependencies
         run: |
           go get golang.org/x/mobile/bind
+          # Remove WebRTC dependency for mobile build
+          go mod edit -droprequire=github.com/pion/webrtc/v3
+          go mod tidy
           go mod download
       
       - name: Initialize gomobile

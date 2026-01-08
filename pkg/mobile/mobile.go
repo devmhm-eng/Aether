@@ -218,6 +218,16 @@ func maintainConnection() {
 			}
 		}
 
+		// 👻 Ghost Protocol Handshake
+		// Must match server's handleTCPConnection expectation
+		ghostHeader := "POST / HTTP/1.1\r\nHost: aether.net\r\nContent-Length: 0\r\n\r\n"
+		_, err = conn.Write([]byte(ghostHeader))
+		if err != nil {
+			log.Printf("⚠️ Mobile Ghost Handshake Failed: %v", err)
+			conn.Close()
+			continue
+		}
+
 		session, err := smux.Client(conn, smuxConf)
 		if err != nil {
 			log.Printf("⚠️ Mobile Handshake Failed: %v", err)
@@ -291,6 +301,13 @@ func StartVPN(fd int, configJSON string) error {
 	conn, err := tls.Dial("tcp", targetAddr, tlsConf)
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %v", err)
+	}
+
+	// 👻 Ghost Protocol Handshake
+	ghostHeader := "POST / HTTP/1.1\r\nHost: aether.net\r\nContent-Length: 0\r\n\r\n"
+	if _, err := conn.Write([]byte(ghostHeader)); err != nil {
+		conn.Close()
+		return fmt.Errorf("ghost handshake failed: %v", err)
 	}
 
 	// Create smux session

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_colors.dart';
 import 'package:aether_client/aether_client.dart';
 import 'dart:convert';
+import '../../core/constants/api_constants.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -33,6 +34,7 @@ class _HomeScreenState extends State<HomeScreen> {
         // Start VPN - need config
         final config = json.encode({
           'client_uuid': '550e8400-e29b-41d4-a716-446655440000', // Should come from storage
+          'server_addr': ApiConstants.vpnAddress,
           'servers': [],
         });
         

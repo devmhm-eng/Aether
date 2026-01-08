@@ -6,5 +6,5 @@ package mobile
 
 import (
 	_ "github.com/xtaci/smux"
-	_ "golang.org/x/crypto"
+	_ "golang.org/x/crypto/chacha20poly1305"
 )

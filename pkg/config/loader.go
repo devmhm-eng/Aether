@@ -16,7 +16,8 @@ type Config struct {
 	LocalPort  int    `json:"local_port"`
 	// Client Side
 	ClientUUID string `json:"uuid,omitempty"`
-	Transport  string `json:"transport,omitempty"` // "auto", "tcp", "ws"
+	HardwareID string `json:"hardware_id,omitempty"` // Provided by Host App (Flutter)
+	Transport  string `json:"transport,omitempty"`   // "auto", "tcp", "ws"
 
 	// Server Side
 	Users        []User `json:"users,omitempty"`
@@ -30,6 +31,10 @@ type Config struct {
 	// Admin API
 	AdminPort  string `json:"admin_port,omitempty"`  // Default 8081
 	AdminToken string `json:"admin_token,omitempty"` // Security Token
+
+	// Horizon Integration
+	HorizonDB string `json:"horizon_db,omitempty"` // Path to horizon.db for multi-tenant
+	NodeID    int    `json:"node_id,omitempty"`    // ID of this node in Horizon DB
 }
 
 func LoadConfig(path string) (*Config, error) {

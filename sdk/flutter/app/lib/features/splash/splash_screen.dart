@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:aether_client/aether_client.dart';
+import '../../core/constants/api_constants.dart';
 import '../../core/theme/app_colors.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -37,25 +38,26 @@ class _SplashScreenState extends State<SplashScreen> {
          "user_uuid": uuid
        });
        
-       final responseStr = await AetherClient.request("get_config", payload);
+       // Use Full URL from Constants
+       final responseStr = await AetherClient.request(ApiConstants.baseUrl, payload);
        debugPrint("SPLASH: Auth Response: $responseStr");
        
        final response = jsonDecode(responseStr);
        
-       // Check for actual auth failure vs other errors
-       if (response['status'] == 'error') {
+       // Check for explicit SUCCESS
+       if (response['status'] == 'ok') {
+          // Success
+          if (mounted) context.go('/home');
+       } else {
          if (response['message'] == 'User not found') {
            // Real authentication error - user doesn't exist
            await _storage.delete(key: 'user_uuid');
            if (mounted) context.go('/login');
          } else {
-           // Other errors (No active nodes, etc) - user is still authenticated
-           // Just go to home, they can see error there
-           if (mounted) context.go('/home');
+           // Other errors - treat as auth failure to be safe
+           debugPrint("SPLASH: Auth Failed: ${response['message']}");
+           if (mounted) context.go('/login');
          }
-       } else {
-         // Success
-         if (mounted) context.go('/home');
        }
     } catch (e) {
        debugPrint("SPLASH: Auth Error: $e");

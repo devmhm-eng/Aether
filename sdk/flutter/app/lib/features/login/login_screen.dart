@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:aether_client/aether_client.dart';
+import '../../core/constants/api_constants.dart';
 import '../../core/theme/app_colors.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -33,7 +34,7 @@ class _LoginScreenState extends State<LoginScreen> {
         "label": "Flutter Client"
       });
 
-      final responseStr = await AetherClient.request("register_device", payload);
+      final responseStr = await AetherClient.request(ApiConstants.baseUrl, payload);
       debugPrint("LOGIN: Response: $responseStr");
 
       final response = jsonDecode(responseStr);

@@ -73,9 +73,12 @@ func SyncAll() {
 		if err == nil && limit > 0 {
 			limitBytes := int64(limit * 1024 * 1024 * 1024)
 			if totalUsage > limitBytes {
-				// 🚫 Disable User Logic (Implementation: Update all nodes to Limits=0 or Remove)
-				// For now just log
-				log.Printf("🚫 User %s EXCEEDED Quota (%.2fGB / %.2fGB)", uuid, float64(totalUsage)/1e9, limit)
+				// 🚫 Disable User
+				log.Printf("🚫 User %s EXCEEDED Quota (%.2fGB / %.2fGB). Suspending...", uuid, float64(totalUsage)/1e9, limit)
+				db.DB.Exec("UPDATE users SET status='suspended' WHERE uuid=?", uuid)
+
+				// TODO: Trigger PushNodeConfig to immediately cut off user
+				// For now, they will be removed on next config update
 			}
 		}
 	}

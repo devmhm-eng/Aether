@@ -13,7 +13,12 @@ func Init(path string) {
 	var err error
 	DB, err = sql.Open("sqlite3", path)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("❌ Failed to open database:", err)
+	}
+
+	// Enable Foreign Keys
+	if _, err := DB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		log.Printf("⚠️ Failed to enable foreign keys: %v", err)
 	}
 
 	createTables()
@@ -93,6 +98,13 @@ func createTables() {
 		FOREIGN KEY (user_uuid) REFERENCES users(uuid) ON DELETE CASCADE,
 		FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
 		UNIQUE(user_uuid, group_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS group_inbounds (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		group_id INTEGER NOT NULL,
+		inbound_tag TEXT NOT NULL,
+		FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
 	);
 
 	CREATE TABLE IF NOT EXISTS user_config_usage (

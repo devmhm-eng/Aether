@@ -5,14 +5,20 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 )
 
 // Full Xray Config Definitions
 type XrayConfig struct {
-	Log       LogConfig  `json:"log"`
-	Inbounds  []Inbound  `json:"inbounds"`
-	Outbounds []Outbound `json:"outbounds"`
+	Log       LogConfig   `json:"log"`
+	Api       *ApiConfig  `json:"api,omitempty"`
+	Stats     StatsConfig `json:"stats"`
+	Policy    *Policy     `json:"policy,omitempty"`
+	Inbounds  []Inbound   `json:"inbounds"`
+	Outbounds []Outbound  `json:"outbounds"`
+	Routing   *Routing    `json:"routing,omitempty"`
 }
 
 type LogConfig struct {
@@ -20,12 +26,42 @@ type LogConfig struct {
 }
 
 type Inbound struct {
+	Listen         string          `json:"listen,omitempty"`
 	Port           int             `json:"port"`
 	Protocol       string          `json:"protocol"`
 	Settings       json.RawMessage `json:"settings"` // Polymorphic
 	StreamSettings *StreamSettings `json:"streamSettings,omitempty"`
 	Tag            string          `json:"tag"`
 	Sniffing       *SniffingConfig `json:"sniffing,omitempty"`
+}
+
+// ... SniffingConfig ...
+
+// ... (Rest of structs) ...
+
+// Helper function to query stats
+func (m *Manager) GetStats() (map[string]int64, error) {
+	// Execute: xray api statsquery --server=127.0.0.1:10085
+	// Pattern: user >>> [email] >>> traffic >>> [downlink|uplink] >>> [value]
+
+	cmd := exec.Command(m.binPath, "api", "statsquery", "--server=127.0.0.1:10085")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query stats: %v. Output: %s", err, string(output))
+	}
+
+	usageMap := make(map[string]int64)
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		// Example: user >>> 550e8400... >>> traffic >>> downlink >>> 1024
+		parts := strings.Split(line, " >>> ")
+		if len(parts) >= 5 && parts[0] == "user" && parts[2] == "traffic" {
+			email := parts[1] // We use UUID as email
+			value, _ := strconv.ParseInt(strings.TrimSpace(parts[4]), 10, 64)
+			usageMap[email] += value
+		}
+	}
+	return usageMap, nil
 }
 
 type SniffingConfig struct {
@@ -124,6 +160,33 @@ type Outbound struct {
 	Protocol string `json:"protocol"`
 }
 
+// API & Stats
+type ApiConfig struct {
+	Tag      string   `json:"tag"`
+	Services []string `json:"services"`
+}
+
+type StatsConfig struct{}
+
+type Policy struct {
+	Levels map[string]PolicyLevel `json:"levels"`
+}
+
+type PolicyLevel struct {
+	StatsUserUplink   bool `json:"statsUserUplink"`
+	StatsUserDownlink bool `json:"statsUserDownlink"`
+}
+
+type Routing struct {
+	Rules []RoutingRule `json:"rules"`
+}
+
+type RoutingRule struct {
+	InboundTag  []string `json:"inboundTag"`
+	OutboundTag string   `json:"outboundTag"`
+	Type        string   `json:"type"`
+}
+
 // Manager handles the local Xray Instance
 type Manager struct {
 	mu            sync.Mutex
@@ -179,9 +242,33 @@ func (m *Manager) initConfig() {
 	// 5. VLESS XHTTP (4433) - Experimental
 	vlessXhttpBytes, _ := json.Marshal(vlessSettings)
 
+	// API Inbound (Dokodemo)
+	apiSettings := map[string]string{"address": "127.0.0.1"}
+	apiBytes, _ := json.Marshal(apiSettings)
+
 	m.CurrentConfig = &XrayConfig{
-		Log: LogConfig{LogLevel: "warning"},
+		Log:   LogConfig{LogLevel: "warning"},
+		Api:   &ApiConfig{Tag: "api", Services: []string{"StatsService"}},
+		Stats: StatsConfig{},
+		Policy: &Policy{
+			Levels: map[string]PolicyLevel{
+				"0": {StatsUserUplink: true, StatsUserDownlink: true},
+			},
+		},
+		Routing: &Routing{
+			Rules: []RoutingRule{
+				{Type: "field", InboundTag: []string{"api"}, OutboundTag: "api"},
+			},
+		},
 		Inbounds: []Inbound{
+			// API Inbound
+			{
+				Tag:      "api",
+				Port:     10085,
+				Listen:   "127.0.0.1",
+				Protocol: "dokodemo-door",
+				Settings: apiBytes,
+			},
 			// VLESS Reality
 			{
 				Tag:      "vless-reality",

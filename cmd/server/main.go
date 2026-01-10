@@ -124,11 +124,26 @@ func main() {
 	}))
 
 	// Stats API (Mock for now to satisfy Panel Poller)
+	// Stats API (Real User Usage)
 	http.HandleFunc("/admin/stats", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		// In a real implementation, we would query Xray's Stats API (gRPC or HTTP)
-		// For now, return empty stats so the Panel sees us as "Online"
-		// The Panel expects []config.User
-		w.Write([]byte("[]"))
+		usageMap, err := xrayMgr.GetStats()
+		if err != nil {
+			log.Printf("❌ Failed to get stats from Xray Core: %v", err)
+			http.Error(w, "Failed to get stats", http.StatusInternalServerError)
+			return
+		}
+
+		var stats []config.User
+		for uuid, usage := range usageMap {
+			stats = append(stats, config.User{UUID: uuid, UsageBytes: usage})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if stats == nil {
+			w.Write([]byte("[]"))
+		} else {
+			json.NewEncoder(w).Encode(stats)
+		}
 	}))
 
 	// User Management (Dynamic Config Update)

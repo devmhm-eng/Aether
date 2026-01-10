@@ -34,6 +34,7 @@ const PROTOCOLS = [
 
 const SNIPPETS = {
     vless: `{
+    "tag": "vless-reality",
     "listen": "0.0.0.0",
     "port": 443,
     "protocol": "vless",
@@ -64,6 +65,7 @@ const SNIPPETS = {
     }
   }`,
     vmess: `{
+    "tag": "vmess-ws",
     "listen": "0.0.0.0",
     "port": 8080,
     "protocol": "vmess",
@@ -83,6 +85,7 @@ const SNIPPETS = {
     }
   }`,
     trojan: `{
+    "tag": "trojan-tls",
     "listen": "0.0.0.0",
     "port": 8443,
     "protocol": "trojan",
@@ -107,6 +110,7 @@ const SNIPPETS = {
     }
   }`,
     shadowsocks: `{
+    "tag": "ss-tcp",
     "listen": "0.0.0.0",
     "port": 1080,
     "protocol": "shadowsocks",

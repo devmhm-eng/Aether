@@ -43,7 +43,7 @@ func main() {
 	http.HandleFunc("/sub", handleSubscription)
 	http.HandleFunc("/api/admin/stats", handleAdminStats)
 	// http.HandleFunc("/api/groups/configs", handleGroupConfigs)
-	// http.HandleFunc("/api/users/assign-group", handleUserGroup)
+	http.HandleFunc("/api/users/assign-group", handleUserGroup)
 
 	// 🛡️ Project Enigma
 	// http.HandleFunc("/api/v1/secure", handleSecure)
@@ -275,16 +275,17 @@ func migrateSchema() {
 func handleNodes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		rows, _ := db.DB.Query("SELECT id, name, ip, status, base_config FROM nodes")
+		rows, _ := db.DB.Query("SELECT id, name, ip, admin_port, master_key, status, base_config FROM nodes")
 		defer rows.Close()
 		var list []map[string]interface{}
 		for rows.Next() {
 			var id int
-			var name, ip, status string
+			var name, ip, adminPort, masterKey, status string
 			var baseConfig sql.NullString
-			rows.Scan(&id, &name, &ip, &status, &baseConfig)
+			rows.Scan(&id, &name, &ip, &adminPort, &masterKey, &status, &baseConfig)
 			list = append(list, map[string]interface{}{
-				"id": id, "name": name, "ip": ip, "status": status,
+				"id": id, "name": name, "ip": ip, "admin_port": adminPort,
+				"master_key": masterKey, "status": status,
 				"base_config": baseConfig.String,
 			})
 		}
@@ -302,51 +303,24 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
   "routing": { "domainStrategy": "IPIfNonMatch", "rules": [] },
   "outbounds": [{ "protocol": "freedom", "tag": "DIRECT" }]
 }`
-		// Generate Master Key if not provided
-		if node.MasterKey == "" {
-			node.MasterKey = generateRandomKey()
-		}
+		// Generate Master Key
+		masterKey := generateRandomKey()
+		adminPort := "8081"
 
-		res, err := db.DB.Exec("INSERT INTO nodes (name, ip, admin_port, master_key, base_config) VALUES (?, ?, ?, ?, ?)",
-			node.Name, node.IP, node.AdminPort, node.MasterKey, node.BaseConfig)
+		res, err := db.DB.Exec("INSERT INTO nodes (name, ip, admin_port, master_key, status, base_config) VALUES (?, ?, ?, ?, 'offline', ?)",
+			n.Name, n.IP, adminPort, masterKey, defaultBase)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		id, _ := res.LastInsertId()
-		node.ID = int(id)
-		node.Status = "offline" // Default
 
-		json.NewEncoder(w).Encode(node)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": int(id), "name": n.Name, "ip": n.IP,
+			"admin_port": adminPort, "master_key": masterKey,
+			"status": "offline", "base_config": defaultBase,
+		})
 
-	} else if r.Method == http.MethodPut {
-		var node core.Node
-		if err := json.NewDecoder(r.Body).Decode(&node); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		_, err := db.DB.Exec("UPDATE nodes SET name=?, ip=?, admin_port=?, base_config=? WHERE id=?",
-			node.Name, node.IP, node.AdminPort, node.BaseConfig, node.ID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		
-		// Re-fetch to return full object including master key
-		var updatedNode core.Node
-		db.DB.QueryRow("SELECT id, name, ip, admin_port, master_key, status, base_config FROM nodes WHERE id=?", node.ID).
-			Scan(&updatedNode.ID, &updatedNode.Name, &updatedNode.IP, &updatedNode.AdminPort, &updatedNode.MasterKey, &updatedNode.Status, &updatedNode.BaseConfig)
-			
-		json.NewEncoder(w).Encode(updatedNode)
-	}
-}
-		_, err := db.DB.Exec("INSERT INTO nodes (name, ip, status, base_config) VALUES (?, ?, 'active', ?)", n.Name, n.IP, defaultBase)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "PUT":
 		var n struct {
 			ID         int    `json:"id"`
@@ -370,7 +344,19 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+		// Re-fetch to return full object including master key
+		var id int
+		var name, ip, adminPort, masterKey, status string
+		var baseConfig sql.NullString
+		db.DB.QueryRow("SELECT id, name, ip, admin_port, master_key, status, base_config FROM nodes WHERE id=?", n.ID).
+			Scan(&id, &name, &ip, &adminPort, &masterKey, &status, &baseConfig)
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": id, "name": name, "ip": ip, "admin_port": adminPort,
+			"master_key": masterKey, "status": status,
+			"base_config": baseConfig.String,
+		})
 	case "DELETE":
 		id := r.URL.Query().Get("id")
 		db.DB.Exec("DELETE FROM node_configs WHERE node_id=?", id)
@@ -787,10 +773,11 @@ func handleNodeConfigsAssign(w http.ResponseWriter, r *http.Request) {
 
 // pushNodeConfig fetches all assigned configs, merges them, and pushes to Agent
 func pushNodeConfig(nodeID int) error {
-	// 1. Get Node IP and Base Config
-	var ip string
+	// 1. Get Node Information
+	var ip, adminPort, masterKey string
 	var baseConfigRaw sql.NullString
-	err := db.DB.QueryRow("SELECT ip, base_config FROM nodes WHERE id=?", nodeID).Scan(&ip, &baseConfigRaw)
+	err := db.DB.QueryRow("SELECT ip, admin_port, master_key, base_config FROM nodes WHERE id=?", nodeID).
+		Scan(&ip, &adminPort, &masterKey, &baseConfigRaw)
 	if err != nil {
 		return fmt.Errorf("node not found")
 	}
@@ -807,86 +794,150 @@ func pushNodeConfig(nodeID int) error {
 	}
 	defer rows.Close()
 
-	var allInbounds []json.RawMessage
+	var allInbounds []map[string]interface{}
+
 	for rows.Next() {
 		var raw sql.NullString
 		rows.Scan(&raw)
 		if raw.Valid && raw.String != "" {
-			// Expecting raw.String to be a JSON Object (Single Inbound) OR Array
-			// The user said "check full configs art here", implying lists of objects or single objects.
-			// Let's assume the user pastes a Single Protocol Object per Template.
-			// BUT they might paste a LIST.
-			// Robustness: parsing as RawMessage just stores bytes.
-			// We need to construct: { "inbounds": [ ... ] }
-
-			// Decision: Treat everything as a JSON ELEMENT.
-			// If it starts with '[', explode it.
 			trimmed := strings.TrimSpace(raw.String)
+			var list []map[string]interface{}
+
+			// Handle Array vs Single Object
 			if strings.HasPrefix(trimmed, "[") {
-				var list []json.RawMessage
-				if err := json.Unmarshal([]byte(trimmed), &list); err == nil {
-					allInbounds = append(allInbounds, list...)
-				}
+				json.Unmarshal([]byte(trimmed), &list)
 			} else {
-				allInbounds = append(allInbounds, json.RawMessage(trimmed))
+				var single map[string]interface{}
+				json.Unmarshal([]byte(trimmed), &single)
+				list = append(list, single)
+			}
+
+			// 2.5 Inject Users per Inbound
+			for _, inbound := range list {
+				// Get Protocol & Tag
+				tag, _ := inbound["tag"].(string)
+				protocol, _ := inbound["protocol"].(string)
+
+				if tag == "" {
+					allInbounds = append(allInbounds, inbound) // Skip if no tag
+					continue
+				}
+
+				// Fetch Users allowed for this tag
+				// TODO: Optimize query (prepare once)
+				uRows, err := db.DB.Query(`
+					SELECT u.uuid, u.name 
+					FROM users u 
+					JOIN user_groups ug ON u.uuid = ug.user_uuid 
+					JOIN group_inbounds gi ON ug.group_id = gi.group_id 
+					WHERE gi.inbound_tag = ? AND u.status = 'active'
+				`, tag)
+
+				if err != nil {
+					log.Println("Error fetching users for tag:", tag, err)
+					allInbounds = append(allInbounds, inbound)
+					continue
+				}
+
+				var clients []map[string]interface{}
+
+				// Read template flow/alterId from first client if exists
+				var templateFlow string
+				var templateAlterId float64 = 0
+
+				settingsMap, _ := inbound["settings"].(map[string]interface{})
+				if settingsMap != nil {
+					if existingClients, ok := settingsMap["clients"].([]interface{}); ok && len(existingClients) > 0 {
+						if first, ok := existingClients[0].(map[string]interface{}); ok {
+							if f, ok := first["flow"].(string); ok {
+								templateFlow = f
+							}
+							if a, ok := first["alterId"].(float64); ok {
+								templateAlterId = a
+							}
+						}
+					}
+				} else {
+					settingsMap = make(map[string]interface{})
+				}
+
+				for uRows.Next() {
+					var uuid, name string
+					uRows.Scan(&uuid, &name)
+
+					client := map[string]interface{}{
+						"id":    uuid,
+						"email": name,
+					}
+
+					// Protocol Specifics
+					if protocol == "vless" {
+						if templateFlow != "" {
+							client["flow"] = templateFlow
+						}
+					} else if protocol == "vmess" {
+						client["alterId"] = templateAlterId
+					} else if protocol == "trojan" {
+						client["password"] = uuid
+						delete(client, "id") // Trojan uses password
+					}
+
+					clients = append(clients, client)
+				}
+				uRows.Close()
+
+				// Overwrite clients
+				settingsMap["clients"] = clients
+				inbound["settings"] = settingsMap
+
+				allInbounds = append(allInbounds, inbound)
 			}
 		}
 	}
 
 	// 3. Construct Full Config
-	// Start with Base Config (DNS, Routing, Outbounds)
 	var finalConfig map[string]interface{}
-
 	defaultBase := `{
 		"log": { "loglevel": "warning" },
 		"inbounds": [],
 		"outbounds": [{ "protocol": "freedom", "tag": "DIRECT" }]
 	}`
-
 	baseJSON := defaultBase
 	if baseConfigRaw.Valid && baseConfigRaw.String != "" {
 		baseJSON = baseConfigRaw.String
 	}
-
 	if err := json.Unmarshal([]byte(baseJSON), &finalConfig); err != nil {
-		// Fallback to default if base is corrupt
 		json.Unmarshal([]byte(defaultBase), &finalConfig)
 	}
 
-	// Force overwrite "inbounds" with our managed list
 	finalConfig["inbounds"] = allInbounds
 
 	configBytes, _ := json.MarshalIndent(finalConfig, "", "  ")
 
 	// --- 4. Push Config to Agent ---
-	agentURL := fmt.Sprintf("http://%s:%s/api/config", node.IP, node.AdminPort)
+	agentURL := fmt.Sprintf("http://%s:%s/api/config", ip, adminPort)
 	req, err := http.NewRequest("POST", agentURL, bytes.NewBuffer(configBytes))
 	if err != nil {
-		log.Printf("❌ Failed to create request for node %d: %v", node.ID, err)
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-
-	// SECURE: Send Master Key
-	if node.MasterKey != "" {
-		req.Header.Set("X-Master-Key", node.MasterKey)
+	if masterKey != "" {
+		req.Header.Set("X-Master-Key", masterKey)
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("❌ Failed to push to node %d: %v", node.ID, err)
-		return fmt.Errorf("failed to push config to agent: %w", err)
+		return fmt.Errorf("failed to push config: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("⚠️ Node %d rejected config: %s", node.ID, string(body))
-		return fmt.Errorf("agent rejected config: code %d, body: %s", resp.StatusCode, string(body))
-	} else {
-		log.Printf("✅ Config pushed to node %d", node.ID)
+		return fmt.Errorf("agent rejected: code %d, body: %s", resp.StatusCode, string(body))
 	}
+
+	log.Printf("✅ Config with Users pushed to node %d", nodeID)
 	return nil
 }
 

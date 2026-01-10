@@ -43,7 +43,7 @@ export default function NodesPage() {
     const [assignedCounts, setAssignedCounts] = useState({})
 
     const fetchNodes = () => {
-        fetch('/api/nodes')
+        fetch('/api/nodes', { cache: 'no-store' })
             .then(res => res.json())
             .then(data => {
                 setNodes(data || [])
@@ -147,7 +147,7 @@ export default function NodesPage() {
     const dockerCommand = selectedNode ? `docker run -d --name horizon-agent --network host --restart always \\
   -e ADMIN_PORT=8081 \\
   -e MASTER_KEY=${selectedNode.master_key} \\
-  ghcr.io/devmhm/horizon-agent:latest` : ""
+  ghcr.io/devmhm-eng/aether:main` : ""
 
     const openBaseConfigDialog = (node: any) => {
         setSelectedNode(node)

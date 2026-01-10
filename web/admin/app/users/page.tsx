@@ -233,14 +233,33 @@ export default function UsersPage() {
         const subUrl = `${window.location.protocol}//${window.location.host}/sub?uuid=${user.uuid}`
         setSubscriptionUrl(subUrl)
 
+        // 1. Fetch JSON for Dialog UI
+        try {
+            const res = await fetch(`/api/user/config?uuid=${user.uuid}`)
+            if (res.ok) {
+                const text = await res.text()
+                setConfigData(text) // Store JSON string for parsing in render
+            } else {
+                setConfigData("")
+            }
+        } catch (e) {
+            console.error("Failed to fetch config json", e)
+            setConfigData("")
+        }
+
+        // 2. Fetch Subscription (Base64) for Link List (Optional, but good for validation)
         try {
             const res = await fetch(subUrl)
             if (res.ok) {
                 const text = await res.text()
-                // Decode Base64
-                const decoded = atob(text)
-                const links = decoded.split('\n').filter(l => l.trim() !== "")
-                setConfigLinks(links)
+                try {
+                    const decoded = atob(text)
+                    const links = decoded.split('\n').filter(l => l.trim() !== "")
+                    setConfigLinks(links)
+                } catch (e) {
+                    // If sub returns non-base64 (e.g. error message), ignore
+                    setConfigLinks([])
+                }
             } else {
                 setConfigLinks([])
             }
@@ -286,6 +305,8 @@ export default function UsersPage() {
         fetchUsers()
     }
 
+    const [removeGroupDialogOpen, setRemoveGroupDialogOpen] = useState(false)
+
     // Consolidated Handlers (reused logic)
     const handleAssignGroup = async () => {
         if (!selectedUser) return
@@ -310,17 +331,26 @@ export default function UsersPage() {
         fetchUsers()
     }
 
+    const confirmRemoveGroup = () => {
+        setRemoveGroupDialogOpen(true)
+    }
+
     const handleRemoveGroup = async () => {
         if (!selectedUser || !selectedUser.group_id) return
-        if (!confirm(`Remove ${selectedUser.name} from group?`)) return
 
-        await fetch(`/api/users/assign-group?user_uuid=${selectedUser.uuid}&group_id=${selectedUser.group_id}`, {
+        const res = await fetch(`/api/users/assign-group?user_uuid=${selectedUser.uuid}&group_id=${selectedUser.group_id}`, {
             method: 'DELETE'
         })
-        setSelectedGroup("")
-        fetchUsers()
-        // Update selectedUser locally to reflect change immediately in UI if needed, or rely on fetchUsers
-        setSelectedUser({ ...selectedUser, group_id: undefined, group_name: undefined })
+
+        if (res.ok) {
+            setSelectedGroup("")
+            // Update selectedUser locally to reflect change immediately in UI
+            setSelectedUser({ ...selectedUser, group_id: undefined, group_name: undefined })
+            fetchUsers()
+            setRemoveGroupDialogOpen(false)
+        } else {
+            alert("Failed to remove group")
+        }
     }
 
     const handleCreateFromTemplate = async () => {
@@ -789,7 +819,7 @@ export default function UsersPage() {
                                             {selectedUser?.group_name || "No Group Assigned"}
                                         </span>
                                         {selectedUser?.group_id && (
-                                            <Button variant="destructive" size="sm" onClick={handleRemoveGroup}>
+                                            <Button variant="destructive" size="sm" onClick={confirmRemoveGroup}>
                                                 Remove
                                             </Button>
                                         )}
@@ -827,7 +857,25 @@ export default function UsersPage() {
                             Client configs for {selectedUser?.name}.
                         </DialogDescription>
                     </DialogHeader>
-
+                    <div className="bg-zinc-950 p-3 rounded-md mb-4 flex items-center justify-between gap-2 border border-zinc-800 mt-4">
+                        <div className="flex-col overflow-hidden">
+                            <span className="text-[10px] uppercase text-zinc-500 font-bold block">Subscription URL</span>
+                            <div className="truncate text-xs font-mono text-blue-400">
+                                {subscriptionUrl}
+                            </div>
+                        </div>
+                        <Button
+                            size="sm"
+                            variant="secondary"
+                            className="h-8 text-xs shrink-0 bg-blue-600/10 text-blue-400 hover:bg-blue-600/20 border border-blue-600/20"
+                            onClick={() => {
+                                navigator.clipboard.writeText(subscriptionUrl);
+                                alert("Subscription URL copied!");
+                            }}
+                        >
+                            <Copy className="h-3 w-3 mr-2" /> Copy Link
+                        </Button>
+                    </div>
                     <div className="max-h-[60vh] overflow-y-auto space-y-4 py-4 pr-2">
                         {(() => {
                             try {
@@ -942,6 +990,23 @@ export default function UsersPage() {
                         <AlertDialogCancel className="bg-zinc-800 border-zinc-700">Cancel</AlertDialogCancel>
                         <AlertDialogAction onClick={handleDeleteUser} className="bg-red-600 hover:bg-red-700">
                             Delete
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+            <AlertDialog open={removeGroupDialogOpen} onOpenChange={setRemoveGroupDialogOpen}>
+                <AlertDialogContent className="bg-zinc-900 border-zinc-800 text-white">
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Unassign Group?</AlertDialogTitle>
+                        <AlertDialogDescription className="text-zinc-400">
+                            Remove <strong>{selectedUser?.name}</strong> from their current group?
+                            They will lose access to group-assigned inbound configs.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel className="bg-zinc-800 border-zinc-700">Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={handleRemoveGroup} className="bg-red-600 hover:bg-red-700">
+                            Unassign
                         </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>

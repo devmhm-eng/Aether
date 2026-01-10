@@ -19,13 +19,17 @@ FROM alpine:latest
 
 WORKDIR /root/
 
-# Install Xray (Required dependency)
-# We need to fetch xray or copy it. For now, let's assume we download it.
-RUN apk add --no-cache curl unzip \
-    && curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip \
-    && unzip xray.zip -d /usr/bin/ \
-    && chmod +x /usr/bin/xray \
-    && rm xray.zip
+# Install dependencies and download correct Xray architecture
+ARG TARGETARCH
+RUN apk add --no-cache curl unzip && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+    curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip; \
+    else \
+    curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip; \
+    fi && \
+    unzip xray.zip -d /usr/bin/ && \
+    chmod +x /usr/bin/xray && \
+    rm xray.zip
 
 COPY --from=builder /app/horizon-agent .
 

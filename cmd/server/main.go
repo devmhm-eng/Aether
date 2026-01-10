@@ -26,6 +26,15 @@ func main() {
 			MasterKey: "",
 		}
 	}
+
+	// Environment Variable Overrides (Docker Support)
+	if envKey := os.Getenv("MASTER_KEY"); envKey != "" {
+		cfg.MasterKey = envKey
+	}
+	if envPort := os.Getenv("ADMIN_PORT"); envPort != "" {
+		cfg.AdminPort = envPort
+	}
+
 	if cfg.AdminPort == "" {
 		cfg.AdminPort = "8081"
 	}
@@ -37,8 +46,15 @@ func main() {
 	}
 
 	// 2. Initialize Xray Manager
-	// We expect 'xray' binary to be in current directory or PATH
-	xrayMgr := xray.InitManager("./xray-core")
+	// Check for xray binary in standard locations
+	xrayPath := "./xray-core"
+	if _, err := os.Stat(xrayPath); os.IsNotExist(err) {
+		if _, err := os.Stat("/usr/bin/xray"); err == nil {
+			xrayPath = "/usr/bin/xray"
+		}
+	}
+	log.Printf("Using Xray Core at: %s", xrayPath)
+	xrayMgr := xray.InitManager(xrayPath)
 
 	// 3. Start Xray Process
 	if err := xrayMgr.Start(); err != nil {

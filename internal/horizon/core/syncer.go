@@ -50,6 +50,12 @@ func SyncAll() {
 			continue
 		}
 
+		log.Printf("✅ Node %s: Received stats for %d users", n.IP, len(stats))
+		// Log detailed stats for debugging
+		for _, u := range stats {
+			log.Printf("   - User %s: %d bytes", u.UUID, u.UsageBytes)
+		}
+
 		// Success -> Mark Active
 		db.DB.Exec("UPDATE nodes SET status='active' WHERE id=?", n.ID)
 

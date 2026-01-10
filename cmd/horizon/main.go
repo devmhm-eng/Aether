@@ -899,26 +899,81 @@ func pushNodeConfig(nodeID int) error {
 	var finalConfig map[string]interface{}
 	defaultBase := `{
 		"log": { "loglevel": "warning" },
-		"inbounds": [],
-		"outbounds": [{ "protocol": "freedom", "tag": "DIRECT" }]
-	}`
-	baseJSON := defaultBase
+	// 3. Construct Final Config
+	finalConfig := make(map[string]interface{})
 	if baseConfigRaw.Valid && baseConfigRaw.String != "" {
-		baseJSON = baseConfigRaw.String
-	}
-	if err := json.Unmarshal([]byte(baseJSON), &finalConfig); err != nil {
+		json.Unmarshal([]byte(baseConfigRaw.String), &finalConfig)
+	} else {
+		// Use default if empty
 		json.Unmarshal([]byte(defaultBase), &finalConfig)
 	}
 
+	// Always Overlay API, Stats, Policy (Required for Usage Tracking)
+	finalConfig["stats"] = map[string]interface{}{}
+	finalConfig["api"] = map[string]interface{}{
+		"tag":      "api",
+		"services": []string{"StatsService"},
+	}
+	finalConfig["policy"] = map[string]interface{}{
+		"levels": map[string]interface{}{
+			"0": map[string]interface{}{
+				"statsUserUplink":   true,
+				"statsUserDownlink": true,
+			},
+		},
+	}
+	// Merge routing rules or ensure API rule exists
+	// Ideally we parse existing routing, but for now let's ensure API rule is present
+	routing, _ := finalConfig["routing"].(map[string]interface{})
+	if routing == nil {
+		routing = make(map[string]interface{})
+		finalConfig["routing"] = routing
+	}
+	rules, _ := routing["rules"].([]interface{})
+	// Prepend API rule
+	apiRule := map[string]interface{}{
+		"type":        "field",
+		"inboundTag":  []string{"api"},
+		"outboundTag": "api",
+	}
+	// Check duplicates? For now just append to front or back. Front is safer.
+	newRules := append([]interface{}{apiRule}, rules...)
+	routing["rules"] = newRules
+
+	// Add API Inbound
+	apiInbound := map[string]interface{}{
+		"tag":      "api",
+		"port":     10085,
+		"listen":   "127.0.0.1",
+		"protocol": "dokodemo-door",
+		"settings": map[string]interface{}{
+			"address": "127.0.0.1",
+		},
+	}
+	allInbounds = append(allInbounds, apiInbound)
+
 	finalConfig["inbounds"] = allInbounds
 
-	configBytes, _ := json.MarshalIndent(finalConfig, "", "  ")
+	// Add API Outbound (to satisfy routing rule)
+	apiOutbound := map[string]interface{}{
+		"tag":      "api",
+		"protocol": "freedom",
+		"settings": map[string]interface{}{},
+	}
+	// Append apiOutbound to outbounds
+	outbounds, _ := finalConfig["outbounds"].([]interface{})
+	finalConfig["outbounds"] = append(outbounds, apiOutbound)
+
+	configBytes, err := json.Marshal(finalConfig)
+	if err != nil {
+		return err
+	}
 
 	// --- 4. Push Config to Agent ---
 	agentURL := fmt.Sprintf("http://%s:%s/api/config", ip, adminPort)
 	req, err := http.NewRequest("POST", agentURL, bytes.NewBuffer(configBytes))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if masterKey != "" {
@@ -928,7 +983,7 @@ func pushNodeConfig(nodeID int) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to push config: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -946,13 +1001,20 @@ func generateRandomKey() string {
 	return uuid.New().String()
 }
 
+type GroupConfigReq struct {
+	GroupID  int `json:"group_id"`
+	ConfigID int `json:"config_id"`
+}
+
+type UserGroupReq struct {
+	UserUUID string `json:"user_uuid"`
+	GroupID  int    `json:"group_id"`
+}
+
 func handleGroupConfigs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "POST":
-		var gc struct {
-			GroupID  int `json:"group_id"`
-			ConfigID int `json:"config_id"`
-		}
+		var gc GroupConfigReq
 		json.NewDecoder(r.Body).Decode(&gc)
 		_, err := db.DB.Exec("INSERT INTO group_configs (group_id, config_id) VALUES (?, ?)",
 			gc.GroupID, gc.ConfigID)
@@ -976,10 +1038,7 @@ func handleGroupConfigs(w http.ResponseWriter, r *http.Request) {
 func handleUserGroup(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "POST":
-		var ug struct {
-			UserUUID string `json:"user_uuid"`
-			GroupID  int    `json:"group_id"`
-		}
+		var ug UserGroupReq
 		json.NewDecoder(r.Body).Decode(&ug)
 		// Remove existing group assignment first (since we only support 1 group per user for now)
 		db.DB.Exec("DELETE FROM user_groups WHERE user_uuid=?", ug.UserUUID)
@@ -1060,14 +1119,12 @@ func handleSecure(w http.ResponseWriter, r *http.Request) {
 		db.DB.QueryRow("SELECT COUNT(*) FROM user_devices WHERE user_uuid=?", req.UserUUID).Scan(&count)
 
 		if count >= limit {
-			// Check if this device is ALREADY registered to this user (re-install scenario)
+			// Check existing
 			var existing int
-			check := db.DB.QueryRow(`
-				SELECT 1 FROM user_devices ud 
-				JOIN devices d ON ud.device_id = d.id 
-				WHERE ud.user_uuid=? AND d.hardware_id=?`, req.UserUUID, req.HardwareID).Scan(&existing)
+			err := db.DB.QueryRow("SELECT 1 FROM user_devices ud JOIN devices d ON ud.device_id = d.id WHERE ud.user_uuid=? AND d.hardware_id=?", req.UserUUID, req.HardwareID).Scan(&existing)
 
-			if check != nil {
+			if err != nil {
+				// Not found
 				responseJSON = map[string]interface{}{"status": "error", "message": "Device limit reached"}
 				break
 			}
@@ -1096,7 +1153,7 @@ func handleSecure(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 2. Find Active Nodes
-		rows, err := db.DB.Query("SELECT ip_address, admin_port FROM nodes WHERE status='active'")
+		rows, err := db.DB.Query("SELECT ip, admin_port FROM nodes WHERE status='active'")
 		if err != nil {
 			responseJSON = map[string]interface{}{"status": "error", "message": "No active nodes"}
 			break
@@ -1156,12 +1213,7 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		userUUID := r.URL.Query().Get("user_uuid")
 		if userUUID != "" {
 			// Filter by User
-			rows, err = db.DB.Query(`
-				SELECT d.id, d.hardware_id, d.label, d.status, d.last_seen, u.uuid, u.name 
-				FROM devices d 
-				JOIN user_devices ud ON d.id = ud.device_id 
-				JOIN users u ON ud.user_uuid = u.uuid
-				WHERE u.uuid = ?`, userUUID)
+			rows, err = db.DB.Query("SELECT d.id, d.hardware_id, d.label, d.status, d.last_seen, u.uuid, u.name FROM devices d JOIN user_devices ud ON d.id = ud.device_id JOIN users u ON ud.user_uuid = u.uuid WHERE u.uuid = ?", userUUID)
 		} else {
 			// List All
 			rows, err = db.DB.Query(`

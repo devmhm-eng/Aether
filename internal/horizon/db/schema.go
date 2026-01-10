@@ -16,6 +16,11 @@ func Init(path string) {
 		log.Fatal("❌ Failed to open database:", err)
 	}
 
+	// Enable WAL Mode for better concurrency
+	if _, err := DB.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		log.Printf("⚠️ Failed to enable WAL mode: %v", err)
+	}
+
 	// Enable Foreign Keys
 	if _, err := DB.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		log.Printf("⚠️ Failed to enable foreign keys: %v", err)

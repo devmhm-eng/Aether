@@ -5,6 +5,7 @@ import (
 	"aether/pkg/config"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -105,7 +106,8 @@ func fetchStats(ip, port, key string) ([]config.User, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var stats []config.User

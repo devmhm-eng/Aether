@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -129,7 +130,8 @@ func main() {
 		usageMap, err := xrayMgr.GetStats()
 		if err != nil {
 			log.Printf("❌ Failed to get stats from Xray Core: %v", err)
-			http.Error(w, "Failed to get stats", http.StatusInternalServerError)
+			// Return the actual error details for remote debugging
+			http.Error(w, fmt.Sprintf("Failed to get stats: %v", err), http.StatusInternalServerError)
 			return
 		}
 

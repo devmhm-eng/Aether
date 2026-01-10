@@ -1,6 +1,6 @@
 "use client"
 
-import { LayoutDashboard, Users, Server, Settings, Globe, Layers, Smartphone, Activity } from "lucide-react"
+import { LayoutDashboard, Users, Server, Settings, Globe, Layers, Smartphone, Activity, Copy } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
@@ -10,6 +10,7 @@ const routes = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Users", href: "/users", icon: Users },
   { name: "Groups", href: "/groups", icon: Layers },
+  { name: "Templates", href: "/templates", icon: Copy },
   { name: "Configs", href: "/configs", icon: Server },
   { name: "Devices", href: "/devices", icon: Smartphone },
   { name: "Nodes", href: "/nodes", icon: Globe },

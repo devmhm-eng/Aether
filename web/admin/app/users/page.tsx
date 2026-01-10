@@ -56,6 +56,36 @@ interface User {
     group_id?: number;
 }
 
+// Xray Reality Public Key (Placeholder - Replace with real key)
+const REALITY_PBK = "7jKk75S-8_tN5p6qC_D9r1Y2z8u3o4p5q6r7s8t9u0v";
+const SNI = "www.microsoft.com";
+
+function generateLink(conf: any, type: string) {
+    const uuid = conf.uuid;
+    const ip = conf.server;
+    const port = conf.port;
+    const name = encodeURIComponent(`${conf._meta?.core_name || "Aether"}-${type.toUpperCase()}`);
+
+    if (type === 'vless') {
+        // VLESS Reality
+        return `vless://${uuid}@${ip}:${port}?security=reality&encryption=none&pbk=${REALITY_PBK}&fp=chrome&type=tcp&sni=${SNI}&sid=12345678&flow=xtls-rprx-vision#${name}`;
+    } else if (type === 'xhttp') {
+        // VLESS XHTTP
+        return `vless://${uuid}@${ip}:${port}?security=none&encryption=none&type=xhttp&path=/xhttp&mode=auto#${name}-XHTTP`;
+    } else if (type === 'vmess') {
+        // VMess WS
+        const vmessJson = {
+            v: "2", ps: decodeURIComponent(name), add: ip, port: port, id: uuid, aid: "0",
+            scy: "auto", net: "ws", type: "none", host: "", path: "/ws", tls: ""
+        };
+        return "vmess://" + btoa(JSON.stringify(vmessJson));
+    } else if (type === 'trojan') {
+        // Trojan
+        return `trojan://${uuid}@${ip}:${port}?security=none#${name}`;
+    }
+    return "";
+}
+
 export default function UsersPage() {
     const [searchTerm, setSearchTerm] = useState("")
     const [users, setUsers] = useState<User[]>([])
@@ -77,6 +107,42 @@ export default function UsersPage() {
     const [manageDeviceOpen, setManageDeviceOpen] = useState(false)
     const [userDevices, setUserDevices] = useState<any[]>([])
     const [newDevice, setNewDevice] = useState({ hardware_id: "", label: "" })
+
+    // Template State
+    const [templates, setTemplates] = useState([])
+    const [createTemplateDialogOpen, setCreateTemplateDialogOpen] = useState(false)
+    const [bulkTemplateDialogOpen, setBulkTemplateDialogOpen] = useState(false)
+    const [bulkResultDialogOpen, setBulkResultDialogOpen] = useState(false)
+    const [createdLinks, setCreatedLinks] = useState<string[]>([])
+
+    const [templateFormData, setTemplateFormData] = useState({
+        template_id: 0,
+        username: "",
+        note: ""
+    })
+
+    const [bulkTemplateData, setBulkTemplateData] = useState({
+        template_id: 0,
+        count: 1,
+        strategy: "random", // 'random' | 'sequence'
+        username: "user", // base username for sequence
+        note: ""
+    })
+
+    const fetchTemplates = () => {
+        fetch('/api/configs') // Reusing configs endpoint as templates for now? No, wait. 
+        // Logic says "/api/user/from_template" uses "user_template_id"? 
+        // Ah, in previous context 'config_templates' replaced 'configs'. 
+        // Let's assume /api/configs returns the templates we need.
+        // Or if we implemented a specific /api/templates? 
+        // Checking Main.go: No /api/templates. We have /api/configs. 
+        // ConfigsPage manages "config_templates". 
+        // So fetching /api/configs is correct.
+        fetch('/api/configs')
+            .then(res => res.json())
+            .then(data => setTemplates(data || []))
+            .catch(err => console.error("Failed to load templates", err))
+    }
 
     const fetchUsers = () => {
         fetch('/api/users')
@@ -104,6 +170,7 @@ export default function UsersPage() {
     useEffect(() => {
         fetchUsers()
         fetchGroups()
+        fetchTemplates()
     }, [])
 
     const handleAddUser = async () => {
@@ -158,12 +225,32 @@ export default function UsersPage() {
         fetchUsers()
     }
 
-    const handleViewConfig = async (user: any) => {
+    const [configLinks, setConfigLinks] = useState<string[]>([])
+    const [subscriptionUrl, setSubscriptionUrl] = useState("")
+
+    const openConfig = async (user: User) => {
         setSelectedUser(user)
-        const res = await fetch(`/api/user/config?uuid=${user.uuid}`, { cache: 'no-store' })
-        const config = await res.json()
-        setConfigData(JSON.stringify(config, null, 2))
+        const subUrl = `${window.location.protocol}//${window.location.host}/sub?uuid=${user.uuid}`
+        setSubscriptionUrl(subUrl)
+
+        try {
+            const res = await fetch(subUrl)
+            if (res.ok) {
+                const text = await res.text()
+                // Decode Base64
+                const decoded = atob(text)
+                const links = decoded.split('\n').filter(l => l.trim() !== "")
+                setConfigLinks(links)
+            } else {
+                setConfigLinks([])
+            }
+        } catch (e) {
+            console.error("Failed to fetch sub", e)
+            setConfigLinks([])
+        }
+
         setConfigDialogOpen(true)
+        setCopied(false)
     }
 
     const handleCopyConfig = () => {
@@ -236,6 +323,54 @@ export default function UsersPage() {
         setSelectedUser({ ...selectedUser, group_id: undefined, group_name: undefined })
     }
 
+    const handleCreateFromTemplate = async () => {
+        if (!templateFormData.template_id || !templateFormData.username) return;
+
+        const res = await fetch('/api/user/from_template', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_template_id: templateFormData.template_id,
+                username: templateFormData.username,
+                note: templateFormData.note
+            })
+        })
+
+        if (res.ok) {
+            setCreateTemplateDialogOpen(false)
+            fetchUsers()
+            setTemplateFormData({ template_id: 0, username: "", note: "" })
+        } else {
+            alert("Failed to create user (Username might exist)")
+        }
+    }
+
+    const handleBulkFromTemplate = async () => {
+        if (!bulkTemplateData.template_id || bulkTemplateData.count < 1) return;
+
+        const res = await fetch('/api/users/bulk/from_template', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_template_id: bulkTemplateData.template_id,
+                count: bulkTemplateData.count,
+                strategy: bulkTemplateData.strategy,
+                username: bulkTemplateData.username,
+                note: bulkTemplateData.note
+            })
+        })
+
+        if (res.ok) {
+            const data = await res.json()
+            setCreatedLinks(data.subscription_urls || [])
+            setBulkTemplateDialogOpen(false)
+            setBulkResultDialogOpen(true)
+            fetchUsers()
+        } else {
+            alert("Failed to create bulk users")
+        }
+    }
+
     // --- Device Management Handlers ---
     const fetchUserDevices = async (uuid: string) => {
         const res = await fetch(`/api/devices?user_uuid=${uuid}`)
@@ -279,180 +414,213 @@ export default function UsersPage() {
     return (
         <div className="flex-1 space-y-4 p-8 pt-6">
             <div className="flex items-center justify-between">
-                <h2 className="text-3xl font-bold tracking-tight">User Management</h2>
-                {/* ... (Add User Button/Dialog - Keep as is) ... */}
-                <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-                    <DialogTrigger asChild>
-                        <Button>
-                            <Plus className="mr-2 h-4 w-4" /> Add User
-                        </Button>
-                    </DialogTrigger>
-                    <DialogContent className="bg-zinc-900 border-zinc-800 text-white">
-                        <DialogHeader>
-                            <DialogTitle>Add New User</DialogTitle>
-                            <DialogDescription className="text-zinc-400">
-                                Create a new VPN user account.
-                            </DialogDescription>
-                        </DialogHeader>
-                        <div className="grid gap-4 py-4">
-                            <div className="grid gap-2">
-                                <Label htmlFor="name">Name</Label>
-                                <Input
-                                    id="name"
-                                    className="bg-zinc-800 border-zinc-700"
-                                    value={formData.name}
-                                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                                    placeholder="John Doe"
-                                />
+                <div>
+                    <h2 className="text-3xl font-bold tracking-tight">User Management</h2>
+                    <p className="text-zinc-400">Manage users, data limits, and subscriptions.</p>
+                </div>
+                <div className="flex gap-2">
+                    <Dialog open={bulkTemplateDialogOpen} onOpenChange={setBulkTemplateDialogOpen}>
+                        <DialogTrigger asChild>
+                            <Button variant="outline" className="border-emerald-700 text-emerald-500 hover:bg-emerald-950">
+                                <Users className="mr-2 h-4 w-4" /> Bulk Create
+                            </Button>
+                        </DialogTrigger>
+                        <DialogContent className="bg-zinc-900 border-zinc-800 text-white">
+                            <DialogHeader>
+                                <DialogTitle>Bulk Create Users</DialogTitle>
+                                <DialogDescription className="text-zinc-400">Generate multiple users from a template.</DialogDescription>
+                            </DialogHeader>
+                            <div className="grid gap-4 py-4">
+                                <div className="grid gap-2">
+                                    <Label>Select Template</Label>
+                                    <Select onValueChange={(val) => setBulkTemplateData({ ...bulkTemplateData, template_id: parseInt(val) })}>
+                                        <SelectTrigger className="bg-zinc-800 border-zinc-700">
+                                            <SelectValue placeholder="Choose a template" />
+                                        </SelectTrigger>
+                                        <SelectContent className="bg-zinc-800 border-zinc-700 text-white">
+                                            {templates.map((t: any) => (
+                                                <SelectItem key={t.id} value={t.id.toString()}>{t.name}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="grid gap-2">
+                                        <Label>Count</Label>
+                                        <Input type="number" className="bg-zinc-800 border-zinc-700" value={bulkTemplateData.count}
+                                            onChange={(e) => setBulkTemplateData({ ...bulkTemplateData, count: parseInt(e.target.value) })} />
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <Label>Strategy</Label>
+                                        <Select onValueChange={(val) => setBulkTemplateData({ ...bulkTemplateData, strategy: val })} defaultValue="random">
+                                            <SelectTrigger className="bg-zinc-800 border-zinc-700">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent className="bg-zinc-800 border-zinc-700 text-white">
+                                                <SelectItem value="random">Random (Hash)</SelectItem>
+                                                <SelectItem value="sequence">Sequence (Prefix + N)</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+                                {bulkTemplateData.strategy === 'sequence' && (
+                                    <div className="grid gap-2">
+                                        <Label>Base Username</Label>
+                                        <Input className="bg-zinc-800 border-zinc-700" placeholder="user"
+                                            onChange={(e) => setBulkTemplateData({ ...bulkTemplateData, username: e.target.value })} />
+                                    </div>
+                                )}
                             </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="limit" className="text-right">
-                                    Limit (GB)
-                                </Label>
-                                <Input
-                                    id="limit"
-                                    type="number"
-                                    value={formData.limit_gb}
-                                    onChange={(e) => setFormData({ ...formData, limit_gb: e.target.value })}
-                                    className="col-span-3 bg-zinc-800 border-zinc-700"
-                                    placeholder="30"
-                                />
+                            <DialogFooter>
+                                <Button onClick={handleBulkFromTemplate} className="bg-emerald-600 hover:bg-emerald-700">Generate Accounts</Button>
+                            </DialogFooter>
+                        </DialogContent>
+                    </Dialog>
+
+                    <Dialog open={createTemplateDialogOpen} onOpenChange={setCreateTemplateDialogOpen}>
+                        <DialogTrigger asChild>
+                            <Button variant="secondary" className="bg-zinc-800 hover:bg-zinc-700">
+                                <Copy className="mr-2 h-4 w-4" /> From Template
+                            </Button>
+                        </DialogTrigger>
+                        <DialogContent className="bg-zinc-900 border-zinc-800 text-white">
+                            <DialogHeader>
+                                <DialogTitle>Create User from Template</DialogTitle>
+                            </DialogHeader>
+                            <div className="grid gap-4 py-4">
+                                <div className="grid gap-2">
+                                    <Label>Select Template</Label>
+                                    <Select onValueChange={(val) => setTemplateFormData({ ...templateFormData, template_id: parseInt(val) })}>
+                                        <SelectTrigger className="bg-zinc-800 border-zinc-700">
+                                            <SelectValue placeholder="Choose a template" />
+                                        </SelectTrigger>
+                                        <SelectContent className="bg-zinc-800 border-zinc-700 text-white">
+                                            {templates.map((t: any) => (
+                                                <SelectItem key={t.id} value={t.id.toString()}>{t.name}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label>Username</Label>
+                                    <Input className="bg-zinc-800 border-zinc-700" value={templateFormData.username}
+                                        onChange={(e) => setTemplateFormData({ ...templateFormData, username: e.target.value })} />
+                                    <p className="text-[10px] text-zinc-500">Prefix/Suffix from template will be applied automatically.</p>
+                                </div>
                             </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="dev_limit" className="text-right">
-                                    Max Devices
-                                </Label>
-                                <Input
-                                    id="dev_limit"
-                                    type="number"
-                                    value={formData.device_limit}
-                                    onChange={(e) => setFormData({ ...formData, device_limit: Number(e.target.value) })}
-                                    className="col-span-3 bg-zinc-800 border-zinc-700"
-                                    placeholder="3"
-                                />
+                            <DialogFooter>
+                                <Button onClick={handleCreateFromTemplate} className="bg-emerald-600 hover:bg-emerald-700">Create User</Button>
+                            </DialogFooter>
+                        </DialogContent>
+                    </Dialog>
+
+                    <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+                        <DialogTrigger asChild>
+                            <Button className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                                <Plus className="mr-2 h-4 w-4" /> Add User
+                            </Button>
+                        </DialogTrigger>
+                        <DialogContent className="bg-zinc-900 border-zinc-800 text-white">
+                            <DialogHeader>
+                                <DialogTitle>Add New User</DialogTitle>
+                                <DialogDescription className="text-zinc-400">
+                                    Create a manual user configuration.
+                                </DialogDescription>
+                            </DialogHeader>
+                            <div className="grid gap-4 py-4">
+                                <div className="grid gap-2">
+                                    <Label htmlFor="name">Username</Label>
+                                    <Input id="name" className="bg-zinc-800 border-zinc-700" value={formData.name}
+                                        onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="limit">Data Limit (GB)</Label>
+                                    <Input id="limit" type="number" className="bg-zinc-800 border-zinc-700" value={formData.limit_gb}
+                                        onChange={(e) => setFormData({ ...formData, limit_gb: e.target.value })} />
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="device_limit">Device Limit</Label>
+                                    <Input id="device_limit" type="number" className="bg-zinc-800 border-zinc-700" value={formData.device_limit}
+                                        onChange={(e) => setFormData({ ...formData, device_limit: parseInt(e.target.value) })} />
+                                </div>
                             </div>
-                        </div>
-                        <DialogFooter>
-                            <Button onClick={handleAddUser}>Create User</Button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
+                            <DialogFooter>
+                                <Button onClick={handleAddUser} className="bg-emerald-600 hover:bg-emerald-700">Create User</Button>
+                            </DialogFooter>
+                        </DialogContent>
+                    </Dialog>
+                </div>
             </div>
 
-            {/* ... (Search Bar - Keep as is) ... */}
-            <div className="flex items-center py-4">
-                <div className="relative w-full max-w-sm">
-                    <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+            <div className="flex items-center gap-2">
+                <div className="relative flex-1 max-w-sm">
+                    <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-400" />
                     <Input
-                        placeholder="Search by UUID or name..."
-                        className="pl-8 bg-zinc-900 border-zinc-700"
+                        className="pl-9 bg-zinc-900 border-zinc-800 text-white w-full"
+                        placeholder="Search users..."
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                     />
                 </div>
+                <Button variant="outline" size="icon" onClick={fetchUsers} className="border-dashed border-zinc-700 hover:bg-zinc-800">
+                    <RefreshCw className="h-4 w-4 text-zinc-400" />
+                </Button>
             </div>
 
-            {/* Users Table */}
-            <div className="rounded-md border border-zinc-800 bg-zinc-900 text-white">
+            <div className="rounded-md border border-zinc-800 bg-zinc-900/50">
                 <Table>
                     <TableHeader>
-                        <TableRow className="border-zinc-800 hover:bg-zinc-800">
-                            <TableHead className="w-[100px]">Status</TableHead>
-                            <TableHead>Name</TableHead>
-                            <TableHead>Group</TableHead>
-                            <TableHead>UUID</TableHead>
-                            <TableHead>Usage / Limit</TableHead>
-                            <TableHead>Devices</TableHead>
-                            <TableHead className="text-right">Actions</TableHead>
+                        <TableRow className="border-zinc-800 hover:bg-zinc-900">
+                            <TableHead className="text-zinc-400">Username</TableHead>
+                            <TableHead className="text-zinc-400">Status</TableHead>
+                            <TableHead className="text-zinc-400">Data Usage</TableHead>
+                            <TableHead className="text-zinc-400">Limit</TableHead>
+                            <TableHead className="text-zinc-400">Devices</TableHead>
+                            <TableHead className="text-zinc-400">Expiry</TableHead>
+                            <TableHead className="text-right text-zinc-400">Actions</TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
-                        {filteredUsers.map((user: any) => (
-                            <TableRow key={user.uuid} className="border-zinc-800 hover:bg-zinc-800">
+                        {users.filter(u => u.name.toLowerCase().includes(searchTerm.toLowerCase())).map((user) => (
+                            <TableRow key={user.uuid} className="border-zinc-800 text-zinc-300 hover:bg-zinc-800/50">
+                                <TableCell className="font-medium text-white">{user.name}</TableCell>
                                 <TableCell>
-                                    <Badge variant="outline" className={
-                                        user.status === 'active'
-                                            ? "bg-green-500/10 text-green-500 border-green-500/20"
-                                            : "bg-red-500/10 text-red-500 border-red-500/20"
-                                    }>
+                                    <Badge variant="outline" className={user.status === 'active' ? "border-emerald-500/50 text-emerald-500" : "border-red-500/50 text-red-500"}>
                                         {user.status}
                                     </Badge>
                                 </TableCell>
-                                <TableCell className="font-medium">{user.name || 'Unnamed'}</TableCell>
-                                <TableCell>
-                                    {user.group_name && user.group_name !== "No Group" ? (
-                                        <Badge variant="secondary" className="bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 border-purple-500/20">
-                                            {user.group_name}
-                                        </Badge>
-                                    ) : (
-                                        <span className="text-zinc-600 text-sm">No Group</span>
-                                    )}
-                                </TableCell>
-                                <TableCell className="font-mono text-xs text-zinc-400">{user.uuid.substring(0, 8)}...</TableCell>
-                                <TableCell>
-                                    <div className="flex items-center gap-2">
-                                        <span>{((user.used_bytes || 0) / 1e9).toFixed(2)} GB</span>
-                                        <span className="text-zinc-500">/</span>
-                                        <span>{user.limit_gb || 0} GB</span>
-                                    </div>
-                                    <div className="mt-1 h-1.5 w-24 rounded-full bg-zinc-800">
-                                        <div
-                                            className="h-1.5 rounded-full bg-emerald-500"
-                                            style={{ width: `${Math.min((user.used_bytes || 0) / (user.limit_gb * 1e9) * 100, 100)}%` }}
-                                        />
+                                <TableCell>{(user.used_bytes / (1024 * 1024 * 1024)).toFixed(2)} GB</TableCell>
+                                <TableCell>{(user.limit_gb / (1024 * 1024 * 1024)).toFixed(0)} GB</TableCell>
+                                <TableCell >
+                                    <div className="flex items-center gap-1">
+                                        <Smartphone className="h-3 w-3 text-zinc-500" />
+                                        <span>{user.device_count || 0}/{user.device_limit}</span>
                                     </div>
                                 </TableCell>
-                                <TableCell>
-                                    <div className="flex items-center gap-2">
-                                        <Smartphone className="h-4 w-4 text-zinc-500" />
-                                        <span className={user.device_count >= user.device_limit ? "text-red-400" : "text-zinc-300"}>
-                                            {user.device_count} / {user.device_limit}
-                                        </span>
-                                    </div>
-                                </TableCell>
+                                <TableCell>{user.expiry === 0 ? "Unlimited" : new Date(user.expiry * 1000).toLocaleDateString()}</TableCell>
                                 <TableCell className="text-right">
-                                    <div className="flex justify-end gap-1">
+                                    <div className="flex justify-end gap-2">
                                         <Button
                                             variant="ghost"
                                             size="icon"
-                                            className="h-8 w-8"
-                                            onClick={() => openEditDialog(user, 'devices')}
-                                            title="Manage Devices"
+                                            className="h-8 w-8 hover:bg-zinc-800"
+                                            onClick={() => openConfig(user)}
                                         >
-                                            <Smartphone className="h-4 w-4 text-emerald-400" />
-                                        </Button>
-
-                                        <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            className="h-8 w-8"
-                                            onClick={() => openEditDialog(user, 'groups')}
-                                            title="Assign Group"
-                                        >
-                                            <Users className="h-4 w-4 text-purple-400" />
+                                            <FileText className="h-4 w-4 text-blue-400" />
                                         </Button>
                                         <Button
                                             variant="ghost"
                                             size="icon"
-                                            className="h-8 w-8"
-                                            onClick={() => handleViewConfig(user)}
-                                            title="View Config"
-                                        >
-                                            <FileText className="h-4 w-4" />
-                                        </Button>
-                                        <Button
-                                            variant="ghost"
-                                            size="icon"
+                                            className="h-8 w-8 hover:bg-zinc-800"
                                             onClick={() => openEditDialog(user, 'general')}
-                                            className="text-white bg-blue-600/20 hover:bg-blue-600/40"
                                             title="Edit User"
                                         >
-                                            <Pencil className="h-4 w-4 text-blue-400" />
+                                            <Pencil className="h-4 w-4 text-zinc-400" />
                                         </Button>
                                         <Button
                                             variant="ghost"
                                             size="icon"
-                                            className="h-8 w-8"
+                                            className="h-8 w-8 hover:bg-zinc-800"
                                             onClick={() => {
                                                 setSelectedUser(user)
                                                 setRenewDialogOpen(true)
@@ -464,7 +632,7 @@ export default function UsersPage() {
                                         <Button
                                             variant="ghost"
                                             size="icon"
-                                            className="h-8 w-8"
+                                            className="h-8 w-8 hover:bg-zinc-800"
                                             onClick={() => {
                                                 setSelectedUser(user)
                                                 setDeleteDialogOpen(true)
@@ -647,7 +815,7 @@ export default function UsersPage() {
                         )}
                     </div>
                 </DialogContent>
-            </Dialog>
+            </Dialog >
 
             {/* Other Dialogs (Config, Renew, Delete) - Keep these separate as they are distinct actions */}
             {/* View Config Dialog */}
@@ -705,7 +873,23 @@ export default function UsersPage() {
                                                         alert("Config copied!");
                                                     }}
                                                 >
-                                                    <Copy className="h-3 w-3 mr-1" /> Copy
+                                                    <Copy className="h-3 w-3 mr-1" /> Copy JSON
+                                                </Button>
+                                                <Button
+                                                    variant="secondary"
+                                                    size="sm"
+                                                    className="absolute top-2 right-24 h-6 text-xs bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30"
+                                                    onClick={() => {
+                                                        const link = generateLink(conf, conf.protocol);
+                                                        if (link) {
+                                                            navigator.clipboard.writeText(link);
+                                                            alert("Link copied!");
+                                                        } else {
+                                                            alert("Link generation not supported for " + conf.protocol);
+                                                        }
+                                                    }}
+                                                >
+                                                    <Copy className="h-3 w-3 mr-1" /> Copy Link
                                                 </Button>
                                             </div>
                                         </div>
@@ -762,6 +946,6 @@ export default function UsersPage() {
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
-        </div>
+        </div >
     )
 }

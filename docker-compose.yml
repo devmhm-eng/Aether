@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  panel:
+    build:
+      context: .
+      dockerfile: cmd/horizon/Dockerfile
+    image: horizon-panel
+    container_name: horizon-panel
+    restart: always
+    network_mode: host # Simpler for management, or map ports
+    # ports:
+    #   - "8080:8080"
+    volumes:
+      - ./horizon.db:/root/horizon.db
+    environment:
+      - PORT=8080
+
+  agent:
+    build:
+      context: .
+      dockerfile: cmd/server/Dockerfile
+    image: horizon-agent
+    container_name: horizon-agent
+    restart: always
+    network_mode: host
+    environment:
+      - ADMIN_PORT=8081
+      # MASTER_KEY should be passed at runtime or via .env
+    volumes:
+      - ./config.json:/root/config.json # Optional persistence

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -26,20 +27,27 @@ func main() {
 
 	// Existing APIs
 	http.HandleFunc("/api/nodes", handleNodes)
+	http.HandleFunc("/api/nodes/config", handleNodesConfig)
+	http.HandleFunc("/api/nodes/assign", handleNodeConfigsAssign)
 	http.HandleFunc("/api/users", handleUsers)
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/user/config", handleUserConfig)
 	http.HandleFunc("/api/user/renew", handleUserRenew)
 
 	// New Multi-Tenant APIs
-	http.HandleFunc("/api/configs", handleConfigs)
+	http.HandleFunc("/api/configs", handleConfigs) // Defined
 	http.HandleFunc("/api/groups", handleGroups)
-	http.HandleFunc("/api/groups/configs", handleGroupConfigs)
-	http.HandleFunc("/api/users/assign-group", handleUserGroup)
+	http.HandleFunc("/api/user_templates", handleUserTemplates)
+	http.HandleFunc("/api/user/from_template", handleUserFromTemplate)
+	http.HandleFunc("/api/users/bulk/from_template", handleUsersBulkFromTemplate)
+	http.HandleFunc("/sub", handleSubscription)
+	http.HandleFunc("/api/admin/stats", handleAdminStats)
+	// http.HandleFunc("/api/groups/configs", handleGroupConfigs)
+	// http.HandleFunc("/api/users/assign-group", handleUserGroup)
 
 	// 🛡️ Project Enigma
-	http.HandleFunc("/api/v1/secure", handleSecure)
-	http.HandleFunc("/api/v1/test-secure", handleTestSecure) // Unencrypted for development
+	// http.HandleFunc("/api/v1/secure", handleSecure)
+	// http.HandleFunc("/api/v1/test-secure", handleTestSecure) // Unencrypted for development
 	http.HandleFunc("/api/devices", handleDevices)
 
 	log.Println("🚀 Horizon Backend running on :8080")
@@ -118,6 +126,147 @@ func migrateSchema() {
 		log.Println("✅ 'device_limit' column exists.")
 	}
 
+	// 3. Multi-Node Configs Migration (Phase 13)
+	// Create node_configs table for M:N relationship
+	_, err = db.DB.Exec(`
+		CREATE TABLE IF NOT EXISTS node_configs (
+			node_id INTEGER,
+			config_id INTEGER,
+			PRIMARY KEY (node_id, config_id),
+			FOREIGN KEY(node_id) REFERENCES nodes(id),
+			FOREIGN KEY(config_id) REFERENCES core_configs(id)
+		)
+	`)
+	if err != nil {
+		log.Println("❌ Failed to create table node_configs:", err)
+	}
+
+	// Add raw_inbounds to core_configs if not exists
+	needsRawMigration := true
+	rows, err = db.DB.Query("PRAGMA table_info(core_configs)")
+	if err == nil {
+		for rows.Next() {
+			rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk)
+			if name == "raw_inbounds" {
+				needsRawMigration = false
+			}
+		}
+		rows.Close()
+	}
+
+	if needsRawMigration {
+		log.Println("⚠️ Adding 'raw_inbounds' column to core_configs...")
+		_, err := db.DB.Exec("ALTER TABLE core_configs ADD COLUMN raw_inbounds TEXT")
+		if err != nil {
+			log.Println("❌ Raw Inbounds Migration Failed:", err)
+		} else {
+			log.Println("✅ Raw Inbounds Migration Successful.")
+		}
+	}
+
+	// Phase 13.5: Add base_config to nodes for Global Settings (DNS/Routing)
+	needsBaseConfig := true
+	rows, err = db.DB.Query("PRAGMA table_info(nodes)")
+	if err == nil {
+		for rows.Next() {
+			rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk)
+			if name == "base_config" {
+				needsBaseConfig = false
+			}
+		}
+		rows.Close()
+	}
+
+	if needsBaseConfig {
+		log.Println("⚠️ Adding 'base_config' column to nodes...")
+		_, err := db.DB.Exec("ALTER TABLE nodes ADD COLUMN base_config TEXT")
+		if err != nil {
+			log.Println("❌ Base Config Migration Failed:", err)
+		} else {
+			log.Println("✅ Base Config Migration Successful.")
+		}
+	}
+
+	// Phase 14: Groups Access Control Migration
+	_, err = db.DB.Exec(`
+		CREATE TABLE IF NOT EXISTS groups (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			is_disabled BOOLEAN DEFAULT 0
+		);
+
+		CREATE TABLE IF NOT EXISTS group_inbounds (
+			group_id INTEGER,
+			inbound_tag TEXT,
+			PRIMARY KEY (group_id, inbound_tag),
+			FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE
+		);
+
+		CREATE TABLE IF NOT EXISTS user_groups (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_uuid TEXT NOT NULL,
+			group_id INTEGER NOT NULL,
+			FOREIGN KEY(user_uuid) REFERENCES users(uuid) ON DELETE CASCADE,
+			FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE,
+			UNIQUE(user_uuid, group_id)
+		);
+	`)
+	if err != nil {
+		log.Println("❌ Failed to create Group tables:", err)
+	}
+
+	// 14.1 Fix Legacy Groups Table (Missing is_disabled)
+	needsGroupDisabled := true
+	rows, err = db.DB.Query("PRAGMA table_info(groups)")
+	if err == nil {
+		for rows.Next() {
+			rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk)
+			if name == "is_disabled" {
+				needsGroupDisabled = false
+			}
+		}
+		rows.Close()
+	}
+
+	if needsGroupDisabled {
+		log.Println("⚠️ Adding 'is_disabled' column to groups...")
+		_, err := db.DB.Exec("ALTER TABLE groups ADD COLUMN is_disabled BOOLEAN DEFAULT 0")
+		if err != nil {
+			log.Println("❌ Group Disabled Migration Failed:", err)
+		} else {
+			log.Println("✅ Group Disabled Migration Successful.")
+		}
+	}
+
+	// Phase 15: User Templates Migration
+	_, err = db.DB.Exec(`
+		CREATE TABLE IF NOT EXISTS user_templates (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			data_limit INTEGER DEFAULT 0,
+			expire_duration INTEGER DEFAULT 0,
+			username_prefix TEXT,
+			username_suffix TEXT,
+			status TEXT DEFAULT 'active',
+			data_limit_reset_strategy TEXT DEFAULT 'no_reset',
+			extra_settings TEXT, -- JSON
+			is_disabled BOOLEAN DEFAULT 0
+		);
+
+		CREATE TABLE IF NOT EXISTS template_group_association (
+			template_id INTEGER,
+			group_id INTEGER,
+			PRIMARY KEY (template_id, group_id),
+			FOREIGN KEY(template_id) REFERENCES user_templates(id) ON DELETE CASCADE,
+			FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE
+		);
+	`)
+	if err != nil {
+		log.Println("❌ Failed to create User Template tables:", err)
+	} else {
+		log.Println("✅ User Template tables verified.")
+	}
+
 	log.Println("✅ Schema Check Complete.")
 }
 
@@ -126,15 +275,17 @@ func migrateSchema() {
 func handleNodes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		rows, _ := db.DB.Query("SELECT id, name, ip, status FROM nodes")
+		rows, _ := db.DB.Query("SELECT id, name, ip, status, base_config FROM nodes")
 		defer rows.Close()
 		var list []map[string]interface{}
 		for rows.Next() {
 			var id int
 			var name, ip, status string
-			rows.Scan(&id, &name, &ip, &status)
+			var baseConfig sql.NullString
+			rows.Scan(&id, &name, &ip, &status, &baseConfig)
 			list = append(list, map[string]interface{}{
 				"id": id, "name": name, "ip": ip, "status": status,
+				"base_config": baseConfig.String,
 			})
 		}
 		json.NewEncoder(w).Encode(list)
@@ -142,11 +293,55 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 		var n struct {
 			Name string `json:"name"`
 			IP   string `json:"ip"`
-			Key  string `json:"key"`
 		}
 		json.NewDecoder(r.Body).Decode(&n)
-		_, err := db.DB.Exec("INSERT INTO nodes (name, ip, admin_port, master_key, status) VALUES (?, ?, '8081', ?, 'active')",
-			n.Name, n.IP, n.Key)
+		// Default base_config with safe defaults
+		defaultBase := `{
+  "log": { "loglevel": "warning" },
+  "dns": { "servers": ["8.8.8.8", "1.1.1.1"] },
+  "routing": { "domainStrategy": "IPIfNonMatch", "rules": [] },
+  "outbounds": [{ "protocol": "freedom", "tag": "DIRECT" }]
+}`
+		// Generate Master Key if not provided
+		if node.MasterKey == "" {
+			node.MasterKey = generateRandomKey()
+		}
+
+		res, err := db.DB.Exec("INSERT INTO nodes (name, ip, admin_port, master_key, base_config) VALUES (?, ?, ?, ?, ?)",
+			node.Name, node.IP, node.AdminPort, node.MasterKey, node.BaseConfig)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		id, _ := res.LastInsertId()
+		node.ID = int(id)
+		node.Status = "offline" // Default
+
+		json.NewEncoder(w).Encode(node)
+
+	} else if r.Method == http.MethodPut {
+		var node core.Node
+		if err := json.NewDecoder(r.Body).Decode(&node); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		_, err := db.DB.Exec("UPDATE nodes SET name=?, ip=?, admin_port=?, base_config=? WHERE id=?",
+			node.Name, node.IP, node.AdminPort, node.BaseConfig, node.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		
+		// Re-fetch to return full object including master key
+		var updatedNode core.Node
+		db.DB.QueryRow("SELECT id, name, ip, admin_port, master_key, status, base_config FROM nodes WHERE id=?", node.ID).
+			Scan(&updatedNode.ID, &updatedNode.Name, &updatedNode.IP, &updatedNode.AdminPort, &updatedNode.MasterKey, &updatedNode.Status, &updatedNode.BaseConfig)
+			
+		json.NewEncoder(w).Encode(updatedNode)
+	}
+}
+		_, err := db.DB.Exec("INSERT INTO nodes (name, ip, status, base_config) VALUES (?, ?, 'active', ?)", n.Name, n.IP, defaultBase)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -154,26 +349,84 @@ func handleNodes(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "PUT":
 		var n struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
-			IP   string `json:"ip"`
+			ID         int    `json:"id"`
+			Name       string `json:"name"`
+			IP         string `json:"ip"`
+			BaseConfig string `json:"base_config"`
 		}
 		json.NewDecoder(r.Body).Decode(&n)
-		_, err := db.DB.Exec("UPDATE nodes SET name=?, ip=? WHERE id=?", n.Name, n.IP, n.ID)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
+
+		// If BaseConfig is provided, update it too
+		if n.BaseConfig != "" {
+			_, err := db.DB.Exec("UPDATE nodes SET name=?, ip=?, base_config=? WHERE id=?", n.Name, n.IP, n.BaseConfig, n.ID)
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+		} else {
+			_, err := db.DB.Exec("UPDATE nodes SET name=?, ip=? WHERE id=?", n.Name, n.IP, n.ID)
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "DELETE":
-		idStr := r.URL.Query().Get("id")
-		_, err := db.DB.Exec("DELETE FROM nodes WHERE id=?", idStr)
+		id := r.URL.Query().Get("id")
+		db.DB.Exec("DELETE FROM node_configs WHERE node_id=?", id)
+		_, err := db.DB.Exec("DELETE FROM nodes WHERE id=?", id)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
+}
+
+// Proxy: Forward /api/nodes/config -> http://<NodeIP>:8081/api/config
+func handleNodesConfig(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "missing node id", 400)
+		return
+	}
+
+	// 1. Get Node IP
+	var ip string
+	err := db.DB.QueryRow("SELECT ip FROM nodes WHERE id=?", idStr).Scan(&ip)
+	if err != nil {
+		http.Error(w, "node not found", 404)
+		return
+	}
+
+	// 2. Construct Target URL
+	targetURL := Stringf("http://%s:8081/api/config", ip)
+
+	// 3. Create Request
+	proxyReq, err := http.NewRequest(r.Method, targetURL, r.Body)
+	if err != nil {
+		http.Error(w, "failed to create request", 500)
+		return
+	}
+	proxyReq.Header = r.Header
+
+	// 4. Send Request
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		http.Error(w, "failed to contact node: "+err.Error(), 502)
+		return
+	}
+	defer resp.Body.Close()
+
+	// 5. Proxy Response
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// Helper needed because standard fmt.Sprintf is annoying to type repeatedly
+func Stringf(format string, a ...any) string {
+	return fmt.Sprintf(format, a...)
 }
 
 func handleUsers(w http.ResponseWriter, r *http.Request) {
@@ -418,34 +671,40 @@ func handleUserRenew(w http.ResponseWriter, r *http.Request) {
 func handleConfigs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
+		// Phase 13: Fetch configs. If node_id is null, it's a template.
+		// Also fetch node count for templates.
 		rows, _ := db.DB.Query(`
-			SELECT c.id, c.name, c.protocol, c.port, c.status, n.name as node_name
+			SELECT c.id, c.name, c.protocol, c.port, c.status, c.raw_inbounds,
+			       COUNT(nc.node_id) as node_count
 			FROM core_configs c
-			LEFT JOIN nodes n ON c.node_id = n.id
+			LEFT JOIN node_configs nc ON c.id = nc.config_id
+			GROUP BY c.id
 		`)
 		defer rows.Close()
 		var list []map[string]interface{}
 		for rows.Next() {
-			var id int
-			var name, protocol, port, status, nodeName string
-			rows.Scan(&id, &name, &protocol, &port, &status, &nodeName)
+			var id, nodeCount int
+			var name, protocol, port, status string
+			var rawInbounds sql.NullString
+			rows.Scan(&id, &name, &protocol, &port, &status, &rawInbounds, &nodeCount)
 			list = append(list, map[string]interface{}{
 				"id": id, "name": name, "protocol": protocol, "port": port,
-				"status": status, "node_name": nodeName,
+				"status": status, "raw_inbounds": rawInbounds.String, "node_count": nodeCount,
 			})
 		}
 		json.NewEncoder(w).Encode(list)
 	case "POST":
 		var c struct {
-			Name     string `json:"name"`
-			NodeID   int    `json:"node_id"`
-			Protocol string `json:"protocol"`
-			Port     string `json:"port"`
-			Settings string `json:"settings"`
+			Name        string `json:"name"`
+			Protocol    string `json:"protocol"`
+			Port        string `json:"port"`
+			Settings    string `json:"settings"`
+			RawInbounds string `json:"raw_inbounds"`
 		}
 		json.NewDecoder(r.Body).Decode(&c)
-		_, err := db.DB.Exec("INSERT INTO core_configs (name, node_id, protocol, port, settings) VALUES (?, ?, ?, ?, ?)",
-			c.Name, c.NodeID, c.Protocol, c.Port, c.Settings)
+		// NodeID is no longer required for Templates
+		_, err := db.DB.Exec("INSERT INTO core_configs (name, protocol, port, settings, raw_inbounds) VALUES (?, ?, ?, ?, ?)",
+			c.Name, c.Protocol, c.Port, c.Settings, c.RawInbounds)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -453,14 +712,15 @@ func handleConfigs(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "PUT":
 		var c struct {
-			ID       int    `json:"id"`
-			Name     string `json:"name"`
-			Protocol string `json:"protocol"`
-			Port     string `json:"port"`
+			ID          int    `json:"id"`
+			Name        string `json:"name"`
+			Protocol    string `json:"protocol"`
+			Port        string `json:"port"`
+			RawInbounds string `json:"raw_inbounds"`
 		}
 		json.NewDecoder(r.Body).Decode(&c)
-		_, err := db.DB.Exec("UPDATE core_configs SET name=?, protocol=?, port=? WHERE id=?",
-			c.Name, c.Protocol, c.Port, c.ID)
+		_, err := db.DB.Exec("UPDATE core_configs SET name=?, protocol=?, port=?, raw_inbounds=? WHERE id=?",
+			c.Name, c.Protocol, c.Port, c.RawInbounds, c.ID)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -468,6 +728,9 @@ func handleConfigs(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	case "DELETE":
 		id := r.URL.Query().Get("id")
+		// Clean up links first
+		db.DB.Exec("DELETE FROM node_configs WHERE config_id=?", id)
+		db.DB.Exec("DELETE FROM group_configs WHERE config_id=?", id)
 		_, err := db.DB.Exec("DELETE FROM core_configs WHERE id=?", id)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
@@ -477,76 +740,159 @@ func handleConfigs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleGroups(w http.ResponseWriter, r *http.Request) {
+// Phase 13: Manage Node <-> Config Assignments
+func handleNodeConfigsAssign(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
-	case "GET":
-		rows, _ := db.DB.Query("SELECT id, name, description FROM groups")
+	case "GET": // Get assigned config IDs for a node
+		nodeID := r.URL.Query().Get("node_id")
+		rows, _ := db.DB.Query("SELECT config_id FROM node_configs WHERE node_id=?", nodeID)
 		defer rows.Close()
-		var list []map[string]interface{}
+		var ids []int
 		for rows.Next() {
-			var id int
-			var name, description string
-			rows.Scan(&id, &name, &description)
+			var cid int
+			rows.Scan(&cid)
+			ids = append(ids, cid)
+		}
+		json.NewEncoder(w).Encode(ids)
+	case "POST": // Assign multiple configs to a node (Replace All)
+		var req struct {
+			NodeID    int   `json:"node_id"`
+			ConfigIDs []int `json:"config_ids"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
 
-			// Get configs for this group
-			configsRows, _ := db.DB.Query(`
-				SELECT c.id, c.name 
-				FROM core_configs c
-				JOIN group_configs gc ON c.id = gc.config_id
-				WHERE gc.group_id = ?
-			`, id)
-			defer configsRows.Close()
-			var configs []map[string]interface{}
-			for configsRows.Next() {
-				var cid int
-				var cname string
-				configsRows.Scan(&cid, &cname)
-				configs = append(configs, map[string]interface{}{"id": cid, "name": cname})
-			}
+		// Transaction? Simulating for now.
+		// 1. Clear existing
+		_, err := db.DB.Exec("DELETE FROM node_configs WHERE node_id=?", req.NodeID)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
 
-			list = append(list, map[string]interface{}{
-				"id": id, "name": name, "description": description, "configs": configs,
-			})
+		// 2. Add new
+		for _, cid := range req.ConfigIDs {
+			db.DB.Exec("INSERT INTO node_configs (node_id, config_id) VALUES (?, ?)", req.NodeID, cid)
 		}
-		json.NewEncoder(w).Encode(list)
-	case "POST":
-		var g struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
-		}
-		json.NewDecoder(r.Body).Decode(&g)
-		_, err := db.DB.Exec("INSERT INTO groups (name, description) VALUES (?, ?)", g.Name, g.Description)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
+
+		// 3. Trigger Config Push to Agent
+		if err := pushNodeConfig(req.NodeID); err != nil {
+			log.Printf("⚠️ Config Push Failed for Node %d: %v", req.NodeID, err)
+			http.Error(w, "Saved, but failed to push to node: "+err.Error(), 500)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	case "PUT":
-		var g struct {
-			ID          int    `json:"id"`
-			Name        string `json:"name"`
-			Description string `json:"description"`
-		}
-		json.NewDecoder(r.Body).Decode(&g)
-		_, err := db.DB.Exec("UPDATE groups SET name=?, description=? WHERE id=?", g.Name, g.Description, g.ID)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	case "DELETE":
-		id := r.URL.Query().Get("id")
-		// Clean up references
-		db.DB.Exec("DELETE FROM user_groups WHERE group_id=?", id)
-		db.DB.Exec("DELETE FROM group_configs WHERE group_id=?", id)
-		// Delete group
-		_, err := db.DB.Exec("DELETE FROM groups WHERE id=?", id)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
+
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
+}
+
+// pushNodeConfig fetches all assigned configs, merges them, and pushes to Agent
+func pushNodeConfig(nodeID int) error {
+	// 1. Get Node IP and Base Config
+	var ip string
+	var baseConfigRaw sql.NullString
+	err := db.DB.QueryRow("SELECT ip, base_config FROM nodes WHERE id=?", nodeID).Scan(&ip, &baseConfigRaw)
+	if err != nil {
+		return fmt.Errorf("node not found")
+	}
+
+	// 2. Fetch all raw_inbounds for this node
+	rows, err := db.DB.Query(`
+		SELECT c.raw_inbounds 
+		FROM core_configs c 
+		JOIN node_configs nc ON c.id = nc.config_id 
+		WHERE nc.node_id = ?
+	`, nodeID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var allInbounds []json.RawMessage
+	for rows.Next() {
+		var raw sql.NullString
+		rows.Scan(&raw)
+		if raw.Valid && raw.String != "" {
+			// Expecting raw.String to be a JSON Object (Single Inbound) OR Array
+			// The user said "check full configs art here", implying lists of objects or single objects.
+			// Let's assume the user pastes a Single Protocol Object per Template.
+			// BUT they might paste a LIST.
+			// Robustness: parsing as RawMessage just stores bytes.
+			// We need to construct: { "inbounds": [ ... ] }
+
+			// Decision: Treat everything as a JSON ELEMENT.
+			// If it starts with '[', explode it.
+			trimmed := strings.TrimSpace(raw.String)
+			if strings.HasPrefix(trimmed, "[") {
+				var list []json.RawMessage
+				if err := json.Unmarshal([]byte(trimmed), &list); err == nil {
+					allInbounds = append(allInbounds, list...)
+				}
+			} else {
+				allInbounds = append(allInbounds, json.RawMessage(trimmed))
+			}
+		}
+	}
+
+	// 3. Construct Full Config
+	// Start with Base Config (DNS, Routing, Outbounds)
+	var finalConfig map[string]interface{}
+
+	defaultBase := `{
+		"log": { "loglevel": "warning" },
+		"inbounds": [],
+		"outbounds": [{ "protocol": "freedom", "tag": "DIRECT" }]
+	}`
+
+	baseJSON := defaultBase
+	if baseConfigRaw.Valid && baseConfigRaw.String != "" {
+		baseJSON = baseConfigRaw.String
+	}
+
+	if err := json.Unmarshal([]byte(baseJSON), &finalConfig); err != nil {
+		// Fallback to default if base is corrupt
+		json.Unmarshal([]byte(defaultBase), &finalConfig)
+	}
+
+	// Force overwrite "inbounds" with our managed list
+	finalConfig["inbounds"] = allInbounds
+
+	configBytes, _ := json.MarshalIndent(finalConfig, "", "  ")
+
+	// --- 4. Push Config to Agent ---
+	agentURL := fmt.Sprintf("http://%s:%s/api/config", node.IP, node.AdminPort)
+	req, err := http.NewRequest("POST", agentURL, bytes.NewBuffer(configBytes))
+	if err != nil {
+		log.Printf("❌ Failed to create request for node %d: %v", node.ID, err)
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// SECURE: Send Master Key
+	if node.MasterKey != "" {
+		req.Header.Set("X-Master-Key", node.MasterKey)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("❌ Failed to push to node %d: %v", node.ID, err)
+		return fmt.Errorf("failed to push config to agent: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("⚠️ Node %d rejected config: %s", node.ID, string(body))
+		return fmt.Errorf("agent rejected config: code %d, body: %s", resp.StatusCode, string(body))
+	} else {
+		log.Printf("✅ Config pushed to node %d", node.ID)
+	}
+	return nil
+}
+
+// Helper
+func generateRandomKey() string {
+	return uuid.New().String()
 }
 
 func handleGroupConfigs(w http.ResponseWriter, r *http.Request) {
@@ -861,4 +1207,426 @@ func handleDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
+}
+
+// Phase 14: Groups CRUD
+func handleGroups(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case "GET":
+		rows, err := db.DB.Query(`
+			SELECT g.id, g.name, g.is_disabled, 
+			       COUNT(DISTINCT ug.user_uuid) as total_users,
+			       GROUP_CONCAT(gi.inbound_tag) as tags
+			FROM groups g
+			LEFT JOIN user_groups ug ON g.id = ug.group_id
+			LEFT JOIN group_inbounds gi ON g.id = gi.group_id
+			GROUP BY g.id
+		`)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		defer rows.Close()
+
+		var list []map[string]interface{}
+		for rows.Next() {
+			var id, totalUsers int
+			var name string
+			var isDisabled bool
+			var tags sql.NullString
+			rows.Scan(&id, &name, &isDisabled, &totalUsers, &tags)
+			tagList := []string{}
+			if tags.Valid && tags.String != "" {
+				tagList = strings.Split(tags.String, ",")
+			}
+			list = append(list, map[string]interface{}{
+				"id": id, "name": name, "is_disabled": isDisabled,
+				"total_users": totalUsers, "inbound_tags": tagList,
+			})
+		}
+		json.NewEncoder(w).Encode(list)
+
+	case "POST":
+		var req struct {
+			Name        string   `json:"name"`
+			InboundTags []string `json:"inbound_tags"`
+			IsDisabled  bool     `json:"is_disabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", 400)
+			return
+		}
+
+		res, err := db.DB.Exec("INSERT INTO groups (name, is_disabled) VALUES (?, ?)", req.Name, req.IsDisabled)
+		if err != nil {
+			http.Error(w, "Create Failed: "+err.Error(), 500)
+			return
+		}
+		gid, _ := res.LastInsertId()
+
+		// Insert Tags
+		for _, tag := range req.InboundTags {
+			db.DB.Exec("INSERT INTO group_inbounds (group_id, inbound_tag) VALUES (?, ?)", gid, tag)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "id": gid})
+
+	case "PUT":
+		var req struct {
+			Id          int      `json:"id"`
+			Name        string   `json:"name"`
+			InboundTags []string `json:"inbound_tags"`
+			IsDisabled  bool     `json:"is_disabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", 400)
+			return
+		}
+		_, err := db.DB.Exec("UPDATE groups SET name=?, is_disabled=? WHERE id=?", req.Name, req.IsDisabled, req.Id)
+		if err != nil {
+			http.Error(w, "Update Failed", 500)
+			return
+		}
+
+		// Update Tags (Simple Wipe & Recreate)
+		db.DB.Exec("DELETE FROM group_inbounds WHERE group_id=?", req.Id)
+		for _, tag := range req.InboundTags {
+			db.DB.Exec("INSERT INTO group_inbounds (group_id, inbound_tag) VALUES (?, ?)", req.Id, tag)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+
+	case "DELETE":
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "Missing ID", 400)
+			return
+		}
+		// Cascade delete handles user/inbound associations if ON DELETE CASCADE set.
+		// Sqlite needs `PRAGMA foreign_keys = ON` usually, but we can delete manually to be safe.
+		db.DB.Exec("DELETE FROM user_groups WHERE group_id=?", id)
+		db.DB.Exec("DELETE FROM group_inbounds WHERE group_id=?", id)
+		_, err := db.DB.Exec("DELETE FROM groups WHERE id=?", id)
+		if err != nil {
+			http.Error(w, "Delete Failed", 500)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+	}
+}
+
+func handleUserTemplates(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		rows, _ := db.DB.Query("SELECT id, name, data_limit, expire_duration, username_prefix, username_suffix, status, data_limit_reset_strategy, extra_settings, is_disabled FROM user_templates")
+		defer rows.Close()
+		var list []map[string]interface{}
+		for rows.Next() {
+			var t struct {
+				ID                     int            `json:"id"`
+				Name                   string         `json:"name"`
+				DataLimit              int64          `json:"data_limit"`
+				ExpireDuration         int64          `json:"expire_duration"`
+				UsernamePrefix         sql.NullString `json:"username_prefix"`
+				UsernameSuffix         sql.NullString `json:"username_suffix"`
+				Status                 string         `json:"status"`
+				DataLimitResetStrategy string         `json:"data_limit_reset_strategy"`
+				ExtraSettings          sql.NullString `json:"extra_settings"`
+				IsDisabled             bool           `json:"is_disabled"`
+			}
+			rows.Scan(&t.ID, &t.Name, &t.DataLimit, &t.ExpireDuration, &t.UsernamePrefix, &t.UsernameSuffix, &t.Status, &t.DataLimitResetStrategy, &t.ExtraSettings, &t.IsDisabled)
+
+			// Get Groups
+			gRows, _ := db.DB.Query("SELECT group_id FROM template_group_association WHERE template_id=?", t.ID)
+			var groups []int
+			for gRows.Next() {
+				var gid int
+				gRows.Scan(&gid)
+				groups = append(groups, gid)
+			}
+			gRows.Close()
+
+			list = append(list, map[string]interface{}{
+				"id":                        t.ID,
+				"name":                      t.Name,
+				"data_limit":                t.DataLimit,
+				"expire_duration":           t.ExpireDuration,
+				"username_prefix":           t.UsernamePrefix.String,
+				"username_suffix":           t.UsernameSuffix.String,
+				"status":                    t.Status,
+				"data_limit_reset_strategy": t.DataLimitResetStrategy,
+				"extra_settings":            t.ExtraSettings.String,
+				"is_disabled":               t.IsDisabled,
+				"group_ids":                 groups,
+			})
+		}
+		json.NewEncoder(w).Encode(list)
+
+	case "POST":
+		var req struct {
+			Name                   string `json:"name"`
+			DataLimit              int64  `json:"data_limit"`
+			ExpireDuration         int64  `json:"expire_duration"`
+			UsernamePrefix         string `json:"username_prefix"`
+			UsernameSuffix         string `json:"username_suffix"`
+			Status                 string `json:"status"`
+			DataLimitResetStrategy string `json:"data_limit_reset_strategy"`
+			ExtraSettings          string `json:"extra_settings"`
+			IsDisabled             bool   `json:"is_disabled"`
+			GroupIDs               []int  `json:"group_ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", 400)
+			return
+		}
+
+		res, err := db.DB.Exec(`
+			INSERT INTO user_templates (name, data_limit, expire_duration, username_prefix, username_suffix, status, data_limit_reset_strategy, extra_settings, is_disabled) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, req.Name, req.DataLimit, req.ExpireDuration, req.UsernamePrefix, req.UsernameSuffix, req.Status, req.DataLimitResetStrategy, req.ExtraSettings, req.IsDisabled)
+
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		tid, _ := res.LastInsertId()
+		for _, gid := range req.GroupIDs {
+			db.DB.Exec("INSERT INTO template_group_association (template_id, group_id) VALUES (?, ?)", tid, gid)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "id": tid})
+
+	case "PUT":
+		var req struct {
+			ID                     int    `json:"id"`
+			Name                   string `json:"name"`
+			DataLimit              int64  `json:"data_limit"`
+			ExpireDuration         int64  `json:"expire_duration"`
+			UsernamePrefix         string `json:"username_prefix"`
+			UsernameSuffix         string `json:"username_suffix"`
+			Status                 string `json:"status"`
+			DataLimitResetStrategy string `json:"data_limit_reset_strategy"`
+			ExtraSettings          string `json:"extra_settings"`
+			IsDisabled             bool   `json:"is_disabled"`
+			GroupIDs               []int  `json:"group_ids"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		_, err := db.DB.Exec(`
+			UPDATE user_templates SET name=?, data_limit=?, expire_duration=?, username_prefix=?, username_suffix=?, status=?, data_limit_reset_strategy=?, extra_settings=?, is_disabled=?
+			WHERE id=?
+		`, req.Name, req.DataLimit, req.ExpireDuration, req.UsernamePrefix, req.UsernameSuffix, req.Status, req.DataLimitResetStrategy, req.ExtraSettings, req.IsDisabled, req.ID)
+
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		db.DB.Exec("DELETE FROM template_group_association WHERE template_id=?", req.ID)
+		for _, gid := range req.GroupIDs {
+			db.DB.Exec("INSERT INTO template_group_association (template_id, group_id) VALUES (?, ?)", req.ID, gid)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+
+	case "DELETE":
+		id := r.URL.Query().Get("id")
+		db.DB.Exec("DELETE FROM template_group_association WHERE template_id=?", id)
+		_, err := db.DB.Exec("DELETE FROM user_templates WHERE id=?", id)
+		if err != nil {
+			http.Error(w, "Delete Failed", 500)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+	}
+}
+
+func handleUserFromTemplate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+
+	var req struct {
+		TemplateID int    `json:"user_template_id"`
+		Username   string `json:"username"`
+		Note       string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", 400)
+		return
+	}
+
+	// 1. Fetch Template
+	var t struct {
+		DataLimit      int64
+		ExpireDuration int64
+		Prefix         sql.NullString
+		Suffix         sql.NullString
+		Status         string
+		ResetStrategy  string
+		IsDisabled     bool
+	}
+	err := db.DB.QueryRow("SELECT data_limit, expire_duration, username_prefix, username_suffix, status, data_limit_reset_strategy, is_disabled FROM user_templates WHERE id=?", req.TemplateID).Scan(
+		&t.DataLimit, &t.ExpireDuration, &t.Prefix, &t.Suffix, &t.Status, &t.ResetStrategy, &t.IsDisabled,
+	)
+	if err != nil {
+		http.Error(w, "Template not found: "+err.Error(), 404)
+		return
+	}
+	if t.IsDisabled {
+		http.Error(w, "Template is disabled", 400)
+		return
+	}
+
+	// 2. Construct User
+	finalUsername := req.Username
+	if t.Prefix.Valid {
+		finalUsername = t.Prefix.String + finalUsername
+	}
+	if t.Suffix.Valid {
+		finalUsername = finalUsername + t.Suffix.String
+	}
+
+	// Check existing username
+	var exists int
+	db.DB.QueryRow("SELECT COUNT(*) FROM users WHERE name=?", finalUsername).Scan(&exists)
+	if exists > 0 {
+		http.Error(w, "Username already exists", 409)
+		return
+	}
+
+	newUUID := uuid.New().String()
+	expiry := int64(0)
+	if t.ExpireDuration > 0 {
+		expiry = time.Now().Add(time.Duration(t.ExpireDuration) * time.Second).Unix()
+	}
+
+	// 3. Insert User
+	_, err = db.DB.Exec("INSERT INTO users (uuid, name, limit_gb, expiry, status) VALUES (?, ?, ?, ?, ?)",
+		newUUID, finalUsername, float64(t.DataLimit)/(1024*1024*1024), expiry, t.Status)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	// 4. Assign Groups (Now using UUID)
+	rows, _ := db.DB.Query("SELECT group_id FROM template_group_association WHERE template_id=?", req.TemplateID)
+	for rows.Next() {
+		var gid int
+		rows.Scan(&gid)
+		db.DB.Exec("INSERT INTO user_groups (user_uuid, group_id) VALUES (?, ?)", newUUID, gid)
+	}
+	rows.Close()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "uuid": newUUID, "username": finalUsername})
+}
+
+func handleUsersBulkFromTemplate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+
+	var req struct {
+		TemplateID int    `json:"user_template_id"`
+		Count      int    `json:"count"`
+		Strategy   string `json:"strategy"` // "random" or "sequence"
+		Username   string `json:"username"` // Base for sequence
+		Note       string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", 400)
+		return
+	}
+
+	if req.Count > 500 || req.Count < 1 {
+		http.Error(w, "Count must be between 1 and 500", 400)
+		return
+	}
+
+	// Fetch Template
+	var t struct {
+		DataLimit      int64
+		ExpireDuration int64
+		Prefix         sql.NullString
+		Suffix         sql.NullString
+		Status         string
+		ResetStrategy  string
+		IsDisabled     bool
+	}
+	err := db.DB.QueryRow("SELECT data_limit, expire_duration, username_prefix, username_suffix, status, data_limit_reset_strategy, is_disabled FROM user_templates WHERE id=?", req.TemplateID).Scan(
+		&t.DataLimit, &t.ExpireDuration, &t.Prefix, &t.Suffix, &t.Status, &t.ResetStrategy, &t.IsDisabled,
+	)
+	if err != nil {
+		http.Error(w, "Template not found", 404)
+		return
+	}
+
+	var createdLinks []string
+	createdCount := 0
+
+	// Get Groups for Template
+	var groupIDs []int
+	gRows, _ := db.DB.Query("SELECT group_id FROM template_group_association WHERE template_id=?", req.TemplateID)
+	for gRows.Next() {
+		var gid int
+		gRows.Scan(&gid)
+		groupIDs = append(groupIDs, gid)
+	}
+	gRows.Close()
+
+	for i := 1; i <= req.Count; i++ {
+		// Generate Username
+		var coreName string
+		if req.Strategy == "random" {
+			// Random 5 chars
+			h := sha256.New()
+			h.Write([]byte(fmt.Sprintf("%d-%d", time.Now().UnixNano(), i)))
+			hash := fmt.Sprintf("%x", h.Sum(nil))
+			coreName = hash[:5]
+		} else {
+			// Sequence
+			coreName = fmt.Sprintf("%s%d", req.Username, i)
+		}
+
+		finalUsername := coreName
+		if t.Prefix.Valid {
+			finalUsername = t.Prefix.String + finalUsername
+		}
+		if t.Suffix.Valid {
+			finalUsername = finalUsername + t.Suffix.String
+		}
+
+		// Check Existence
+		var exists int
+		db.DB.QueryRow("SELECT COUNT(*) FROM users WHERE name=?", finalUsername).Scan(&exists)
+		if exists > 0 {
+			continue // Skip duplicate
+		}
+
+		newUUID := uuid.New().String()
+		expiry := int64(0)
+		if t.ExpireDuration > 0 {
+			expiry = time.Now().Add(time.Duration(t.ExpireDuration) * time.Second).Unix()
+		}
+
+		_, err = db.DB.Exec("INSERT INTO users (uuid, name, limit_gb, expiry, status) VALUES (?, ?, ?, ?, ?)",
+			newUUID, finalUsername, float64(t.DataLimit)/(1024*1024*1024), expiry, t.Status)
+
+		if err == nil {
+			createdCount++
+			// Assign Groups
+			for _, gid := range groupIDs {
+				db.DB.Exec("INSERT INTO user_groups (user_uuid, group_id) VALUES (?, ?)", newUUID, gid)
+			}
+			// Generate Link (Mock for now, would use real domain)
+			link := fmt.Sprintf("https://t.me/PasarGuardBot?start=%s", finalUsername)
+			createdLinks = append(createdLinks, link)
+		}
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"created":           createdCount,
+		"subscription_urls": createdLinks,
+	})
 }

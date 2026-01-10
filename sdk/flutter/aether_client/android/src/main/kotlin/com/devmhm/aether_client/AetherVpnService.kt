@@ -26,14 +26,13 @@ class AetherVpnService : VpnService() {
         builder.addRoute("0.0.0.0", 0)
         builder.setMtu(1500)
 
-        // Exclude own app to prevent VPN loop
+        // Exclude own app
         try {
             builder.addDisallowedApplication(packageName)
         } catch (e: Exception) {
             Log.e("AetherVPN", "Failed to exclude package: ${e.message}")
         }
         
-        // Add DNS (Optional)
         builder.addDnsServer("1.1.1.1")
         builder.addDnsServer("8.8.8.8")
 
@@ -43,13 +42,17 @@ class AetherVpnService : VpnService() {
                 val fd = interfaceFd!!.fd
                 Log.i("AetherVPN", "VPN Established. FD: $fd")
                 
-                // 2. Pass FD to Go Core
-                // Run in background thread to avoid blocking Main Logic
+                // 2. Pass FD and Config to Xray Core
+                // We pass generic asset dir (filesDir) for logs/geo files
+                val assetDir = filesDir.absolutePath
+
                 Thread {
                     try {
-                        Mobile.startVPN(fd.toLong(), config)
+                        // Go Bindings: StartVPN(fd int, config string, assetDir string)
+                        // Maps to: Mobile.startVPN(long, String, String)
+                        Mobile.startVPN(fd.toLong(), config, assetDir)
                     } catch (e: Exception) {
-                        Log.e("AetherVPN", "Go Core Error: ${e.message}")
+                        Log.e("AetherVPN", "Xray Core Error: ${e.message}")
                         stopSelf()
                     }
                 }.start()
@@ -68,7 +71,7 @@ class AetherVpnService : VpnService() {
 
     private fun stopVpn() {
         try {
-            Mobile.stop()
+            Mobile.stopVPN()
             interfaceFd?.close()
             interfaceFd = null
             stopSelf()

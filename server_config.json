@@ -1,0 +1,20 @@
+{
+    "server_addr": "0.0.0.0:4242",
+    "local_port": 0,
+    "users": [
+        {
+            "uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "limit_gb": 30,
+            "usage_bytes": 0,
+            "hardware_id": "BE2A.250530.026.D1"
+        }
+    ],
+    "enable_nebula": true,
+    "ipv6_subnet": "2001:db8::/64",
+    "enable_dark_matter": true,
+    "dark_matter_secret": "mysecret123",
+    "admin_port": "8081",
+    "admin_token": "HORIZON_MASTER_KEY_2026_SECURE",
+    "horizon_db": "horizon.db",
+    "node_id": 1
+}

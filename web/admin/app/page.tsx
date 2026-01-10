@@ -8,16 +8,20 @@ import { Activity, Server, Users, Zap } from "lucide-react"
 export default function Home() {
   const [stats, setStats] = useState({
     total_users: 0,
+    active_users: 0,
+    total_bandwidth: 0,
+    total_nodes: 0,
     active_nodes: 0,
-    total_traffic_gb: 0,
   })
 
   useEffect(() => {
-    fetch('/api/stats')
+    fetch('/api/admin/stats')
       .then(res => res.json())
       .then(data => setStats(data))
       .catch(err => console.error('Failed to load stats:', err))
   }, [])
+
+  const trafficGB = stats.total_bandwidth ? (stats.total_bandwidth / (1024 * 1024 * 1024)).toFixed(2) : "0.00"
 
   return (
     <div className="flex-1 space-y-4 p-8 pt-6">
@@ -34,7 +38,7 @@ export default function Home() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{stats.total_users}</div>
-            <p className="text-xs text-zinc-500">Registered accounts</p>
+            <p className="text-xs text-zinc-500">{stats.active_users} active users</p>
           </CardContent>
         </Card>
 
@@ -44,7 +48,7 @@ export default function Home() {
             <Server className="h-4 w-4 text-emerald-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.active_nodes}</div>
+            <div className="text-2xl font-bold">{stats.active_nodes} <span className="text-sm text-zinc-500  font-normal">/ {stats.total_nodes}</span></div>
             <p className="text-xs text-zinc-500">Connected servers</p>
           </CardContent>
         </Card>
@@ -55,7 +59,7 @@ export default function Home() {
             <Activity className="h-4 w-4 text-emerald-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.total_traffic_gb.toFixed(2)} GB</div>
+            <div className="text-2xl font-bold">{trafficGB} GB</div>
             <p className="text-xs text-zinc-500">Cumulative usage</p>
           </CardContent>
         </Card>
@@ -92,7 +96,7 @@ export default function Home() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-zinc-400">Data Transferred</span>
-                <span className="font-medium">{stats.total_traffic_gb.toFixed(2)} GB</span>
+                <span className="font-medium">{trafficGB} GB</span>
               </div>
             </div>
           </CardContent>

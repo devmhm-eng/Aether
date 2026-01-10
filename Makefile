@@ -16,7 +16,7 @@ client-win:
 
 client-android:
 	mkdir -p sdk/flutter/aether_client/android/libs
-	gomobile bind -o sdk/flutter/aether_client/android/libs/aether.aar -target=android ./pkg/mobile
+	gomobile bind -o sdk/flutter/aether_client/android/libs/aether.aar -target=android -androidapi 21 ./pkg/mobile
 	@echo "✅ Client (Android Library) built."
 
 bpf:

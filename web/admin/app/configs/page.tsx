@@ -24,49 +24,119 @@ import {
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Plus, Pencil, Trash2 } from "lucide-react"
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from "@/components/ui/select"
+import { Textarea } from "@/components/ui/textarea"
 
 const PROTOCOLS = [
-    { value: "flux", label: "Flux (uTLS)" },
-    { value: "darkmatter", label: "Dark Matter" },
-    { value: "nebula", label: "Nebula (IPv6)" },
-    { value: "siren", label: "Siren" },
-    { value: "websocket", label: "WebSocket" },
-    { value: "grpc", label: "gRPC" },
-    { value: "http", label: "HTTP" },
+    { value: "vless", label: "VLESS Reality" },
+    { value: "vmess", label: "VMess" },
+    { value: "trojan", label: "Trojan" },
 ]
+
+const SNIPPETS = {
+    vless: `{
+    "listen": "0.0.0.0",
+    "port": 443,
+    "protocol": "vless",
+    "settings": {
+      "clients": [
+        {
+          "id": "uuid_placeholder",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "decryption": "none"
+    },
+    "streamSettings": {
+      "network": "tcp",
+      "security": "reality",
+      "realitySettings": {
+        "show": false,
+        "dest": "www.google.com:443",
+        "xver": 0,
+        "serverNames": [
+          "www.google.com"
+        ],
+        "privateKey": "replace_with_reality_private_key",
+        "shortIds": [
+          ""
+        ]
+      }
+    }
+  }`,
+    vmess: `{
+    "listen": "0.0.0.0",
+    "port": 8080,
+    "protocol": "vmess",
+    "settings": {
+      "clients": [
+        {
+          "id": "uuid_placeholder",
+          "alterId": 0
+        }
+      ]
+    },
+    "streamSettings": {
+      "network": "ws",
+      "wsSettings": {
+        "path": "/ws"
+      }
+    }
+  }`,
+    trojan: `{
+    "listen": "0.0.0.0",
+    "port": 8443,
+    "protocol": "trojan",
+    "settings": {
+      "clients": [
+        {
+          "password": "password_placeholder"
+        }
+      ]
+    },
+    "streamSettings": {
+      "network": "tcp",
+      "security": "tls",
+      "tlsSettings": {
+        "certificates": [
+          {
+            "certificateFile": "/path/to/cert.crt",
+            "keyFile": "/path/to/key.key"
+          }
+        ]
+      }
+    }
+  }`,
+    shadowsocks: `{
+    "listen": "0.0.0.0",
+    "port": 1080,
+    "protocol": "shadowsocks",
+    "settings": {
+      "method": "aes-256-gcm",
+      "password": "password_placeholder",
+      "network": "tcp,udp"
+    }
+  }`
+}
 
 export default function ConfigsPage() {
     const [configs, setConfigs] = useState([])
-    const [nodes, setNodes] = useState([])
     const [addDialogOpen, setAddDialogOpen] = useState(false)
     const [editDialogOpen, setEditDialogOpen] = useState(false)
     const [selectedConfig, setSelectedConfig] = useState<any>(null)
     const [formData, setFormData] = useState({
         name: "",
-        node_id: "",
         protocols: [] as string[],
         auto: false,
-        port: "443"
+        port: "443",
+        raw_inbounds: ""
     })
 
     const fetchConfigs = () => {
         fetch('/api/configs').then(res => res.json()).then(data => setConfigs(data || []))
     }
 
-    const fetchNodes = () => {
-        fetch('/api/nodes').then(res => res.json()).then(data => setNodes(data || []))
-    }
-
     useEffect(() => {
         fetchConfigs()
-        fetchNodes()
     }, [])
 
     const toggleProtocol = (protocol: string) => {
@@ -78,6 +148,33 @@ export default function ConfigsPage() {
         }))
     }
 
+    const addSnippet = (type: keyof typeof SNIPPETS) => {
+        const snippet = SNIPPETS[type]
+        let current = formData.raw_inbounds.trim()
+
+        // Helper to format JSON nicely
+        const format = (str: string) => {
+            try { return JSON.stringify(JSON.parse(str), null, 2) }
+            catch { return str }
+        }
+
+        if (!current) {
+            // Start new array
+            setFormData(prev => ({ ...prev, raw_inbounds: `[\n${snippet}\n]` }))
+        } else {
+            // Try to append to array
+            if (current.startsWith('[') && current.endsWith(']')) {
+                const content = current.slice(1, -1).trim() // Remove []
+                const newContent = `[\n${content},\n${snippet}\n]`
+                setFormData(prev => ({ ...prev, raw_inbounds: newContent })) // Simple append, user can format
+            } else {
+                // Not an array, wrap it? Or just append?
+                // Provide simple append for now
+                setFormData(prev => ({ ...prev, raw_inbounds: current + ",\n" + snippet }))
+            }
+        }
+    }
+
     const handleAdd = async () => {
         const protocolValue = formData.auto ? "auto" : formData.protocols.join(",")
         await fetch('/api/configs', {
@@ -85,14 +182,14 @@ export default function ConfigsPage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 name: formData.name,
-                node_id: parseInt(formData.node_id),
                 protocol: protocolValue,
-                port: formData.port, // Send as string
-                settings: JSON.stringify({ protocols: formData.auto ? ["auto"] : formData.protocols })
+                port: formData.port,
+                settings: JSON.stringify({ protocols: formData.auto ? ["auto"] : formData.protocols }),
+                raw_inbounds: formData.raw_inbounds
             })
         })
         setAddDialogOpen(false)
-        setFormData({ name: "", node_id: "", protocols: [], auto: false, port: "443" })
+        setFormData({ name: "", protocols: [], auto: false, port: "443", raw_inbounds: "" })
         fetchConfigs()
     }
 
@@ -105,7 +202,8 @@ export default function ConfigsPage() {
                 id: selectedConfig.id,
                 name: formData.name,
                 protocol: protocolValue,
-                port: formData.port // Send as string
+                port: formData.port,
+                raw_inbounds: formData.raw_inbounds
             })
         })
         setEditDialogOpen(false)
@@ -113,7 +211,7 @@ export default function ConfigsPage() {
     }
 
     const handleDelete = async (id: number) => {
-        if (confirm('Delete this config?')) {
+        if (confirm('Delete this Config Template?')) {
             await fetch(`/api/configs?id=${id}`, { method: 'DELETE' })
             fetchConfigs()
         }
@@ -127,71 +225,52 @@ export default function ConfigsPage() {
     return (
         <div className="flex-1 space-y-4 p-8 pt-6">
             <div className="flex items-center justify-between">
-                <h2 className="text-3xl font-bold tracking-tight">Core Configs</h2>
+                <div>
+                    <h2 className="text-3xl font-bold tracking-tight">Configuration Templates</h2>
+                    <p className="text-zinc-400 mt-2">Create inbound templates to reuse across multiple nodes.</p>
+                </div>
                 <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
                     <DialogTrigger asChild>
-                        <Button><Plus className="mr-2 h-4 w-4" /> Add Config</Button>
+                        <Button><Plus className="mr-2 h-4 w-4" /> New Template</Button>
                     </DialogTrigger>
-                    <DialogContent className="bg-zinc-900 border-zinc-800 text-white">
+                    <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
                         <DialogHeader>
-                            <DialogTitle>Add New Config</DialogTitle>
+                            <DialogTitle>Create Config Template</DialogTitle>
                             <DialogDescription className="text-zinc-400">
-                                Create a VPN configuration with multiple protocols.
+                                Define Xray inbounds. Paste full JSON array in "Raw Inbounds" for advanced use.
                             </DialogDescription>
                         </DialogHeader>
                         <div className="grid gap-4 py-4">
                             <div className="grid gap-2">
-                                <Label>Name</Label>
+                                <Label>Template Name</Label>
                                 <Input className="bg-zinc-800 border-zinc-700" value={formData.name}
-                                    onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="Multi-Protocol Config" />
+                                    onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="e.g., Standard VLESS Reality" />
                             </div>
+
+                            {/* Raw Inbounds Editor */}
                             <div className="grid gap-2">
-                                <Label>Node</Label>
-                                <Select value={formData.node_id} onValueChange={(v) => setFormData({ ...formData, node_id: v })}>
-                                    <SelectTrigger className="bg-zinc-800 border-zinc-700">
-                                        <SelectValue placeholder="Select node" />
-                                    </SelectTrigger>
-                                    <SelectContent className="bg-zinc-800 border-zinc-700">
-                                        {nodes.map((node: any) => (
-                                            <SelectItem key={node.id} value={node.id.toString()}>{node.name}</SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <div className="grid gap-2">
-                                <Label>Protocols (Select Multiple)</Label>
-                                <div className="flex items-center space-x-2 mb-3 p-3 bg-zinc-800 rounded-md">
-                                    <Checkbox id="auto" checked={formData.auto}
-                                        onCheckedChange={(checked) => setFormData({ ...formData, auto: !!checked })} />
-                                    <label htmlFor="auto" className="text-sm font-medium cursor-pointer">
-                                        Auto (All Protocols) 🚀
-                                    </label>
-                                </div>
-                                {!formData.auto && (
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {PROTOCOLS.map(proto => (
-                                            <div key={proto.value} className="flex items-center space-x-2 p-2 bg-zinc-800 rounded-md">
-                                                <Checkbox
-                                                    id={proto.value}
-                                                    checked={formData.protocols.includes(proto.value)}
-                                                    onCheckedChange={() => toggleProtocol(proto.value)}
-                                                />
-                                                <label htmlFor={proto.value} className="text-sm cursor-pointer">
-                                                    {proto.label}
-                                                </label>
-                                            </div>
-                                        ))}
+                                <div className="flex items-center justify-between">
+                                    <Label className="text-emerald-400">Raw Inbounds (JSON Array/Object)</Label>
+                                    <div className="flex gap-1">
+                                        <Button size="sm" variant="outline" className="h-6 text-[10px] border-zinc-700" onClick={() => addSnippet('vless')}>+ VLESS</Button>
+                                        <Button size="sm" variant="outline" className="h-6 text-[10px] border-zinc-700" onClick={() => addSnippet('vmess')}>+ VMess</Button>
+                                        <Button size="sm" variant="outline" className="h-6 text-[10px] border-zinc-700" onClick={() => addSnippet('trojan')}>+ Trojan</Button>
+                                        <Button size="sm" variant="outline" className="h-6 text-[10px] border-zinc-700" onClick={() => addSnippet('shadowsocks')}>+ SS</Button>
                                     </div>
-                                )}
-                            </div>
-                            <div className="grid gap-2">
-                                <Label>Port</Label>
-                                <Input type="number" className="bg-zinc-800 border-zinc-700" value={formData.port}
-                                    onChange={(e) => setFormData({ ...formData, port: e.target.value })} />
+                                </div>
+                                <Textarea
+                                    className="bg-zinc-950 border-zinc-700 font-mono text-xs h-60 text-green-400"
+                                    value={formData.raw_inbounds}
+                                    onChange={(e) => setFormData({ ...formData, raw_inbounds: e.target.value })}
+                                    placeholder={`[\n  {\n    "listen": "0.0.0.0",\n    "port": 443,\n    ... \n  }\n]`}
+                                />
+                                <p className="text-xs text-zinc-500">
+                                    Use the buttons above to insert templates. Supports multiple inbounds (JSON Array).
+                                </p>
                             </div>
                         </div>
                         <DialogFooter>
-                            <Button onClick={handleAdd}>Create Config</Button>
+                            <Button onClick={handleAdd}>Create Template</Button>
                         </DialogFooter>
                     </DialogContent>
                 </Dialog>
@@ -201,19 +280,27 @@ export default function ConfigsPage() {
                 <Table>
                     <TableHeader>
                         <TableRow className="border-zinc-800 hover:bg-zinc-800">
-                            <TableHead>Name</TableHead>
-                            <TableHead>Node</TableHead>
-                            <TableHead>Protocols</TableHead>
+                            <TableHead>Template Name</TableHead>
+                            <TableHead>Assigned Nodes</TableHead>
+                            <TableHead>Protocols (Meta)</TableHead>
                             <TableHead>Port</TableHead>
-                            <TableHead>Status</TableHead>
                             <TableHead className="text-right">Actions</TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
                         {configs.map((config: any) => (
                             <TableRow key={config.id} className="border-zinc-800 hover:bg-zinc-800">
-                                <TableCell className="font-medium">{config.name}</TableCell>
-                                <TableCell>{config.node_name || 'N/A'}</TableCell>
+                                <TableCell className="font-medium">
+                                    <div className="flex flex-col">
+                                        <span>{config.name}</span>
+                                        {config.raw_inbounds && <span className="text-xs text-emerald-500 font-mono">RAW JSON ENABLED</span>}
+                                    </div>
+                                </TableCell>
+                                <TableCell>
+                                    <Badge variant="outline" className="border-zinc-700 text-zinc-300">
+                                        {config.node_count || 0} Nodes
+                                    </Badge>
+                                </TableCell>
                                 <TableCell>
                                     <div className="flex flex-wrap gap-1">
                                         {parseProtocols(config.protocol).map((p: string) => (
@@ -224,9 +311,6 @@ export default function ConfigsPage() {
                                     </div>
                                 </TableCell>
                                 <TableCell>{config.port}</TableCell>
-                                <TableCell>
-                                    <Badge className="bg-emerald-600">{config.status}</Badge>
-                                </TableCell>
                                 <TableCell className="text-right">
                                     <div className="flex justify-end gap-2">
                                         <Button variant="ghost" size="icon" onClick={() => {
@@ -234,10 +318,10 @@ export default function ConfigsPage() {
                                             const protocols = parseProtocols(config.protocol)
                                             setFormData({
                                                 name: config.name,
-                                                node_id: "",
                                                 protocols: protocols[0] === "AUTO" ? [] : protocols,
                                                 auto: protocols[0] === "AUTO",
-                                                port: config.port.toString()
+                                                port: config.port.toString(),
+                                                raw_inbounds: config.raw_inbounds || ""
                                             })
                                             setEditDialogOpen(true)
                                         }}>
@@ -252,8 +336,8 @@ export default function ConfigsPage() {
                         ))}
                         {configs.length === 0 && (
                             <TableRow>
-                                <TableCell colSpan={6} className="text-center text-zinc-500 py-8">
-                                    No configs found. Create your first multi-protocol VPN configuration.
+                                <TableCell colSpan={5} className="text-center text-zinc-500 py-8">
+                                    No templates found. Create your first Multi-Node Configuration Template.
                                 </TableCell>
                             </TableRow>
                         )}
@@ -261,11 +345,11 @@ export default function ConfigsPage() {
                 </Table>
             </div>
 
-            {/* Edit Dialog - Similar structure */}
+            {/* Edit Dialog */}
             <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-                <DialogContent className="bg-zinc-900 border-zinc-800 text-white">
+                <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-2xl max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle>Edit Config</DialogTitle>
+                        <DialogTitle>Edit Template: {selectedConfig?.name}</DialogTitle>
                     </DialogHeader>
                     <div className="grid gap-4 py-4">
                         <div className="grid gap-2">
@@ -273,40 +357,26 @@ export default function ConfigsPage() {
                             <Input className="bg-zinc-800 border-zinc-700" value={formData.name}
                                 onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
                         </div>
+                        {/* Raw Inbounds Editor */}
                         <div className="grid gap-2">
-                            <Label>Protocols</Label>
-                            <div className="flex items-center space-x-2 mb-3 p-3 bg-zinc-800 rounded-md">
-                                <Checkbox id="auto-edit" checked={formData.auto}
-                                    onCheckedChange={(checked) => setFormData({ ...formData, auto: !!checked })} />
-                                <label htmlFor="auto-edit" className="text-sm font-medium cursor-pointer">
-                                    Auto (All Protocols) 🚀
-                                </label>
-                            </div>
-                            {!formData.auto && (
-                                <div className="grid grid-cols-2 gap-2">
-                                    {PROTOCOLS.map(proto => (
-                                        <div key={proto.value} className="flex items-center space-x-2 p-2 bg-zinc-800 rounded-md">
-                                            <Checkbox
-                                                id={`edit-${proto.value}`}
-                                                checked={formData.protocols.includes(proto.value)}
-                                                onCheckedChange={() => toggleProtocol(proto.value)}
-                                            />
-                                            <label htmlFor={`edit-${proto.value}`} className="text-sm cursor-pointer">
-                                                {proto.label}
-                                            </label>
-                                        </div>
-                                    ))}
+                            <div className="flex items-center justify-between">
+                                <Label className="text-emerald-400">Raw Inbounds (JSON)</Label>
+                                <div className="flex gap-1">
+                                    <Button size="sm" variant="outline" className="h-6 text-[10px] border-zinc-700" onClick={() => addSnippet('vless')}>+ VLESS</Button>
+                                    <Button size="sm" variant="outline" className="h-6 text-[10px] border-zinc-700" onClick={() => addSnippet('vmess')}>+ VMess</Button>
+                                    <Button size="sm" variant="outline" className="h-6 text-[10px] border-zinc-700" onClick={() => addSnippet('trojan')}>+ Trojan</Button>
+                                    <Button size="sm" variant="outline" className="h-6 text-[10px] border-zinc-700" onClick={() => addSnippet('shadowsocks')}>+ SS</Button>
                                 </div>
-                            )}
-                        </div>
-                        <div className="grid gap-2">
-                            <Label>Port</Label>
-                            <Input type="number" className="bg-zinc-800 border-zinc-700" value={formData.port}
-                                onChange={(e) => setFormData({ ...formData, port: e.target.value })} />
+                            </div>
+                            <Textarea
+                                className="bg-zinc-950 border-zinc-700 font-mono text-xs h-60 text-green-400"
+                                value={formData.raw_inbounds}
+                                onChange={(e) => setFormData({ ...formData, raw_inbounds: e.target.value })}
+                            />
                         </div>
                     </div>
                     <DialogFooter>
-                        <Button onClick={handleEdit}>Save Changes</Button>
+                        <Button onClick={handleEdit}>Update Template</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

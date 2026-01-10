@@ -42,3 +42,7 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    implementation(files("../../../aether_client/android/libs/aether.aar"))
+}

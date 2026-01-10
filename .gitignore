@@ -1,31 +1,46 @@
 # Binaries
-bin/
-client_mac
-server_linux
+build/
 *.exe
 *.dll
 *.so
 *.dylib
+horizon-agent
+horizon-panel
+
+# Database
+*.db-journal
+*.db-wal
+aether.db
+# horizon.db (Keep if you want to snapshot prepopulated DB, otherwise ignore)
 
 # Logs
 *.log
-*.out
+logs/
 
-# OS Specific
-.DS_Store
-Thumbs.db
-
-# Configs (User specific)
-client_config.json
-server_config.json
-# Keep config.json as template
-
-# User specific keys/certs
-*.pem
+# Keys & Secrets
 *.key
-*.csr
+*.pem
 *.crt
+
+# Node/Frontend
+node_modules/
+.next/
+dist/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Docker & Deploy
+horizon_deploy.tar.gz
+tmp/
 
 # IDEs
 .vscode/
 .idea/
+*.swp
+.DS_Store
+
+# Android
+.gradle/
+local.properties

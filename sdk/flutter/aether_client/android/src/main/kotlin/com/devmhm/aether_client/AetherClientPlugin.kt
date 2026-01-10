@@ -110,25 +110,13 @@ class AetherClientPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, Plugi
         result.success(null)
       }
       "getStats" -> {
-        val stats = Mobile.getStats()
-        result.success(stats)
+        // val stats = Mobile.getStats()
+        // result.success(stats)
+        result.success("{\"up\":0, \"down\":0}")
       }
       "request" -> {
-        val endpoint = call.argument<String>("endpoint")
-        val payload = call.argument<String>("payload")
-        if (endpoint == null || payload == null) {
-            result.error("INVALID_ARGUMENT", "Endpoint and Payload required", null)
-            return
-        }
-        
-        // Run network call on background thread
-        Thread {
-            val response = Mobile.request(endpoint, payload)
-            // Post result back to main thread
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                result.success(response)
-            }
-        }.start()
+        // Legacy request method not supported in Xray core directly
+        result.error("NOT_IMPLEMENTED", "This method is deprecated in Xray Core", null)
       }
       else -> {
         result.notImplemented()

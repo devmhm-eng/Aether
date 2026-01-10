@@ -18,20 +18,15 @@ type Config struct {
 	// Client Side
 	ClientUUID string `json:"uuid,omitempty"`
 	HardwareID string `json:"hardware_id,omitempty"` // Provided by Host App (Flutter)
-	Transport  string `json:"transport,omitempty"`   // "auto", "tcp", "ws"
 
 	// Server Side
-	Users        []User `json:"users,omitempty"`
-	EnableNebula bool   `json:"enable_nebula,omitempty"`
-	IPv6Subnet   string `json:"ipv6_subnet,omitempty"` // e.g. "2001:db8::/64"
-
-	// Client/Server Shared (Dark Matter)
-	EnableDarkMatter bool   `json:"enable_dark_matter,omitempty"`
-	DarkMatterSecret string `json:"dark_matter_secret,omitempty"`
+	Users      []User `json:"users,omitempty"`
+	IPv6Subnet string `json:"ipv6_subnet,omitempty"` // Used for Outbound Routing
 
 	// Admin API
 	AdminPort  string `json:"admin_port,omitempty"`  // Default 8081
 	AdminToken string `json:"admin_token,omitempty"` // Security Token
+	MasterKey  string `json:"master_key,omitempty"`  // Agent Master Key
 
 	// Horizon Integration
 	HorizonDB string `json:"horizon_db,omitempty"` // Path to horizon.db for multi-tenant

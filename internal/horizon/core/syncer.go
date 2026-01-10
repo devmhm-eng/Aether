@@ -46,8 +46,12 @@ func SyncAll() {
 		stats, err := fetchStats(n.IP, n.Port, n.Key)
 		if err != nil {
 			log.Printf("❌ Node %s Unreachable: %v", n.IP, err)
+			db.DB.Exec("UPDATE nodes SET status='offline' WHERE id=?", n.ID)
 			continue
 		}
+
+		// Success -> Mark Active
+		db.DB.Exec("UPDATE nodes SET status='active' WHERE id=?", n.ID)
 
 		// 3. Aggregate
 		for _, u := range stats {
@@ -80,7 +84,10 @@ func SyncAll() {
 func fetchStats(ip, port, key string) ([]config.User, error) {
 	client := http.Client{Timeout: 5 * time.Second}
 	req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s:%s/admin/stats", ip, port), nil)
-	req.Header.Set("X-Admin-Token", key)
+	// SECURE: Use Master Key
+	if key != "" {
+		req.Header.Set("X-Master-Key", key)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
